@@ -166,14 +166,21 @@ def _load_moss_tts_local_processor(model_path: str, *, device: str) -> Any:
 
 
 class _BatchedReferenceEncoder:
-    """Coalesces concurrent reference-audio encodes into batched codec calls.
+    """Serialises concurrent reference-audio encodes through a single worker thread.
 
     Each request needs its reference run through the ~1B-param codec encoder
     (~0.25 GPU-seconds). The preprocessing workers call :meth:`encode`
-    concurrently; a single daemon thread drains the queue and encodes up to
-    ``max_batch_size`` files in one ``batch_encode`` forward, which costs
-    barely more than a single encode. Failures fall back to per-item encodes
-    so one bad file only fails its own request.
+    concurrently; a single daemon thread drains the queue and encodes each
+    unique path individually with a B=1 forward pass.
+
+    B=1 is required for cache correctness: BF16 linear ops in the codec
+    encoder (e.g. ``encoder.7.input_proj``) are batch-shape-sensitive —
+    identical audio bytes encoded at B>1 can differ from B=1 by up to
+    ~0.016 before quantisation, enough to flip codec token IDs. Because
+    :class:`CachedReferenceEncoder` uses content-addressed keys, the first
+    batch shape to fill a cache slot would otherwise determine all future
+    hits. Encoding each file at B=1 trades cross-file batch throughput on
+    cache-miss fills for deterministic, shape-stable cached tokens.
     """
 
     # Mirrors the Higgs reference-audio cap: bounds both encoder runtime and
@@ -239,21 +246,11 @@ class _BatchedReferenceEncoder:
             batch = self._drain_batch()
             unique_paths = list(dict.fromkeys(path for path, _ in batch))
             results: dict[str, Any] = {}
-            try:
-                encoded = self._processor.encode_audios_from_path(unique_paths)
-                results = dict(zip(unique_paths, encoded))
-            except Exception:
-                logger.exception(
-                    "MOSS-TTS Local batched reference encode failed; "
-                    "retrying per item"
-                )
-                for path in unique_paths:
-                    try:
-                        results[path] = self._processor.encode_audios_from_path([path])[
-                            0
-                        ]
-                    except Exception as exc:
-                        results[path] = exc
+            for path in unique_paths:
+                try:
+                    results[path] = self._processor.encode_audios_from_path([path])[0]
+                except Exception as exc:
+                    results[path] = exc
             for path, future in batch:
                 outcome = results.get(path)
                 if isinstance(outcome, Exception):
