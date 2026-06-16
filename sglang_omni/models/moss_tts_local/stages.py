@@ -170,17 +170,12 @@ class _BatchedReferenceEncoder:
 
     Each request needs its reference run through the ~1B-param codec encoder
     (~0.25 GPU-seconds). The preprocessing workers call :meth:`encode`
-    concurrently; a single daemon thread drains the queue and encodes each
-    unique path individually with a B=1 forward pass.
+    concurrently; a single daemon thread drains the queue and encodes each unique
+    path individually.
 
-    B=1 is required for cache correctness: BF16 linear ops in the codec
-    encoder (e.g. ``encoder.7.input_proj``) are batch-shape-sensitive —
-    identical audio bytes encoded at B>1 can differ from B=1 by up to
-    ~0.016 before quantisation, enough to flip codec token IDs. Because
-    :class:`CachedReferenceEncoder` uses content-addressed keys, the first
-    batch shape to fill a cache slot would otherwise determine all future
-    hits. Encoding each file at B=1 trades cross-file batch throughput on
-    cache-miss fills for deterministic, shape-stable cached tokens.
+    The worker intentionally avoids cross-file batches: BF16 linear ops in the
+    codec encoder (e.g. ``encoder.7.input_proj``) are batch-shape-sensitive, so
+    B>1 execution can produce different codec token IDs for identical audio.
     """
 
     # Mirrors the Higgs reference-audio cap: bounds both encoder runtime and
@@ -267,8 +262,54 @@ class _BatchedReferenceEncoder:
                     future.set_result(outcome)
 
 
+class _CanonicalReferenceEncoder:
+    """Serialized canonical cache-fill encoder for one decoded waveform at a time."""
+
+    def __init__(self, processor: Any) -> None:
+        self._processor = processor
+        self._queue: queue.Queue[
+            tuple[str, torch.Tensor, int, concurrent.futures.Future]
+        ] = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._worker, name="moss-local-ref-canonical-encode", daemon=True
+        )
+        self._thread.start()
+
+    def encode_file(self, path: str) -> torch.Tensor:
+        import soundfile as sf
+
+        audio, sample_rate = sf.read(path, dtype="float32", always_2d=True)
+        duration = audio.shape[0] / max(int(sample_rate), 1)
+        if duration > _BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:
+            raise ValueError(
+                f"reference audio is {duration:.1f}s long; the limit is "
+                f"{_BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:.0f}s"
+            )
+        wav = torch.from_numpy(audio.T)
+        return self.encode_wav(wav, int(sample_rate), desc=path)
+
+    def encode_wav(
+        self, wav: torch.Tensor, sample_rate: int, *, desc: str
+    ) -> torch.Tensor:
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        self._queue.put((desc, wav, int(sample_rate), future))
+        return future.result(timeout=_BatchedReferenceEncoder.ENCODE_TIMEOUT_S)
+
+    def _worker(self) -> None:
+        while True:
+            desc, wav, sample_rate, future = self._queue.get()
+            try:
+                result = self._processor.encode_audios_from_wav([wav], sample_rate)[0]
+            except Exception as exc:
+                future.set_exception(
+                    RuntimeError(f"canonical reference encode failed for {desc}: {exc}")
+                )
+            else:
+                future.set_result(result)
+
+
 class CachedReferenceEncoder:
-    """Content-addressed LRU cache + single-flight dedup in front of _BatchedReferenceEncoder.
+    """Content-addressed LRU cache + single-flight dedup for reference codes.
 
     Every path (miss, hit, follower) returns an independent CPU long tensor, so
     downstream sees one device/dtype regardless of cache temperature.
@@ -284,6 +325,7 @@ class CachedReferenceEncoder:
         *,
         max_items: int = 256,
         max_bytes: int = 64 * 1024 * 1024,
+        canonical_encoder: _CanonicalReferenceEncoder | None = None,
     ) -> None:
         # Fail fast on non-positive capacities: a negative max_items makes
         # StageOutputCache evict from an empty dict and KeyError at request time.
@@ -292,6 +334,11 @@ class CachedReferenceEncoder:
         if max_bytes < 1:
             raise ValueError(f"ref_audio_cache_max_bytes must be >= 1, got {max_bytes}")
         self._encoder = encoder
+        if canonical_encoder is None:
+            processor = getattr(encoder, "_processor", None)
+            if processor is not None and hasattr(processor, "encode_audios_from_wav"):
+                canonical_encoder = _CanonicalReferenceEncoder(processor)
+        self._canonical_encoder = canonical_encoder
         self._cache = StageOutputCache(
             max_size=max_items,
             max_bytes=max_bytes,
@@ -315,9 +362,14 @@ class CachedReferenceEncoder:
         key = _reference_path_cache_key(path)
         if key is None:
             return self._encoder.encode(path)  # uncacheable (URL/missing) -> bypass
+        encode_fn = (
+            lambda: self._canonical_encoder.encode_file(path)
+            if self._canonical_encoder is not None
+            else self._encoder.encode(path)
+        )
         return self._cached_encode(
             key,
-            lambda: self._encoder.encode(path),
+            encode_fn,
             desc=repr(path),
             # TOCTOU re-stat: skip the put if the file changed during the encode.
             revalidate=lambda: _reference_path_cache_key(path) == key,
@@ -441,6 +493,13 @@ class CachedReferenceEncoder:
                     f"{_BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:.0f}s"
                 )
             wav = torch.from_numpy(audio.T)
+            if (
+                self._canonical_encoder is not None
+                and self._canonical_encoder._processor is processor
+            ):
+                return self._canonical_encoder.encode_wav(
+                    wav, int(sample_rate), desc="data-URI"
+                )
             return processor.encode_audios_from_wav([wav], int(sample_rate))[0]
 
         return self._cached_encode(key, _encode, desc="data-URI")
@@ -491,6 +550,7 @@ def create_preprocessing_executor(
             reference_encoder,
             max_items=ref_audio_cache_max_items,
             max_bytes=ref_audio_cache_max_bytes,
+            canonical_encoder=_CanonicalReferenceEncoder(processor),
         )
     set_moss_tts_local_preprocessing_context(
         processor=processor, reference_encoder=reference_encoder
