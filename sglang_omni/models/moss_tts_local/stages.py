@@ -262,6 +262,20 @@ class _BatchedReferenceEncoder:
                     future.set_result(outcome)
 
 
+def _decode_reference_to_wav(src: Any) -> tuple[torch.Tensor, int]:
+    import soundfile as sf
+
+    audio, sample_rate = sf.read(src, dtype="float32", always_2d=True)
+    sample_rate = int(sample_rate)
+    duration = audio.shape[0] / max(sample_rate, 1)
+    if duration > _BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:
+        raise ValueError(
+            f"reference audio is {duration:.1f}s long; the limit is "
+            f"{_BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:.0f}s"
+        )
+    return torch.from_numpy(audio.T), sample_rate
+
+
 class _CanonicalReferenceEncoder:
     """Serialized canonical cache-fill encoder for one decoded waveform at a time."""
 
@@ -276,16 +290,7 @@ class _CanonicalReferenceEncoder:
         self._thread.start()
 
     def encode_file(self, path: str) -> torch.Tensor:
-        import soundfile as sf
-
-        audio, sample_rate = sf.read(path, dtype="float32", always_2d=True)
-        duration = audio.shape[0] / max(int(sample_rate), 1)
-        if duration > _BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:
-            raise ValueError(
-                f"reference audio is {duration:.1f}s long; the limit is "
-                f"{_BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:.0f}s"
-            )
-        wav = torch.from_numpy(audio.T)
+        wav, sample_rate = _decode_reference_to_wav(path)
         return self.encode_wav(wav, int(sample_rate), desc=path)
 
     def encode_wav(
@@ -478,21 +483,10 @@ class CachedReferenceEncoder:
         key = f"bytes:{_hash_bytes(raw)}"
 
         def _encode() -> torch.Tensor:
-            import soundfile as sf
-
-            audio, sample_rate = sf.read(
-                io.BytesIO(raw), dtype="float32", always_2d=True
-            )
             # Note(Jiaxin): the duration check runs inside the leader (not before
             # inflight registration like the file path) so concurrent same-payload
             # requests share one sf.read of a potentially large decoded buffer.
-            duration = audio.shape[0] / max(int(sample_rate), 1)
-            if duration > _BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:
-                raise ValueError(
-                    f"reference audio is {duration:.1f}s long; the limit is "
-                    f"{_BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:.0f}s"
-                )
-            wav = torch.from_numpy(audio.T)
+            wav, sample_rate = _decode_reference_to_wav(io.BytesIO(raw))
             if (
                 self._canonical_encoder is not None
                 and self._canonical_encoder._processor is processor

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import io
 import threading
 import time
 
@@ -61,6 +62,30 @@ def _write_ref(tmp_path, name: str, payload: bytes | None = None) -> str:
     path = tmp_path / name
     path.write_bytes(payload or f"fake wav bytes for {name}".encode())
     return str(path)
+
+
+def test_decode_reference_to_wav_preserves_stereo_and_sample_rate(tmp_path) -> None:
+    pytest.importorskip("soundfile")
+
+    import soundfile as sf
+
+    from sglang_omni.models.moss_tts_local.stages import _decode_reference_to_wav
+
+    ref = tmp_path / "stereo.wav"
+    sample_rate = 22050
+    stereo = torch.stack((torch.linspace(-0.5, 0.5, 160), torch.zeros(160)), dim=1)
+    sf.write(ref, stereo.numpy(), sample_rate)
+
+    file_wav, file_sample_rate = _decode_reference_to_wav(str(ref))
+    bytes_wav, bytes_sample_rate = _decode_reference_to_wav(
+        io.BytesIO(ref.read_bytes())
+    )
+
+    assert file_sample_rate == sample_rate
+    assert bytes_sample_rate == sample_rate
+    assert tuple(file_wav.shape) == (2, 160)
+    assert tuple(bytes_wav.shape) == (2, 160)
+    torch.testing.assert_close(file_wav, bytes_wav)
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +286,8 @@ def test_cache_miss_uses_canonical_wav_encoder_not_batched_path(tmp_path) -> Non
         def __init__(self) -> None:
             self.path_calls: list[int] = []
             self.wav_calls: list[int] = []
+            self.wav_shapes: list[tuple[int, ...]] = []
+            self.sample_rates: list[int] = []
 
         def encode_audios_from_path(self, paths: list[str]) -> list[torch.Tensor]:
             self.path_calls.append(len(paths))
@@ -270,6 +297,8 @@ def test_cache_miss_uses_canonical_wav_encoder_not_batched_path(tmp_path) -> Non
             self, wavs: list[torch.Tensor], sample_rate: int
         ) -> list[torch.Tensor]:
             self.wav_calls.append(len(wavs))
+            self.wav_shapes.extend(tuple(wav.shape) for wav in wavs)
+            self.sample_rates.append(sample_rate)
             return [torch.tensor([1], dtype=torch.long) for _ in wavs]
 
     pytest.importorskip("soundfile")
@@ -277,8 +306,11 @@ def test_cache_miss_uses_canonical_wav_encoder_not_batched_path(tmp_path) -> Non
 
     ref_a = tmp_path / "a.wav"
     ref_b = tmp_path / "b.wav"
-    sf.write(ref_a, torch.zeros(160).numpy(), 16000)
-    sf.write(ref_b, torch.ones(160).numpy(), 16000)
+    sample_rate = 22050
+    stereo_a = torch.stack((torch.zeros(160), torch.ones(160)), dim=1)
+    stereo_b = torch.stack((torch.ones(160), torch.zeros(160)), dim=1)
+    sf.write(ref_a, stereo_a.numpy(), sample_rate)
+    sf.write(ref_b, stereo_b.numpy(), sample_rate)
 
     processor = _ShapeSensitiveProcessor()
     inner = _BatchedReferenceEncoder(processor, max_batch_size=8, max_batch_wait_ms=20)
@@ -290,3 +322,5 @@ def test_cache_miss_uses_canonical_wav_encoder_not_batched_path(tmp_path) -> Non
     assert [r.tolist() for r in results] == [[1], [1]]
     assert processor.path_calls == []
     assert processor.wav_calls == [1, 1]
+    assert processor.wav_shapes == [(2, 160), (2, 160)]
+    assert processor.sample_rates == [sample_rate, sample_rate]
