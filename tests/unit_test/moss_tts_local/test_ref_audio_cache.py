@@ -9,7 +9,6 @@ import time
 import pytest
 import torch
 
-
 # ---------------------------------------------------------------------------
 # Helpers / fakes
 # ---------------------------------------------------------------------------
@@ -26,9 +25,7 @@ class _FakeProcessor:
     def encode_audios_from_path(self, paths: list[str]) -> list[torch.Tensor]:
         with self._lock:
             self.call_sizes.append(len(paths))
-        return [
-            torch.tensor(self._tokens.get(p, [0]), dtype=torch.long) for p in paths
-        ]
+        return [torch.tensor(self._tokens.get(p, [0]), dtype=torch.long) for p in paths]
 
     def encode_audios_from_wav(
         self, wavs: list[torch.Tensor], sample_rate: int
@@ -92,9 +89,9 @@ def test_batched_encoder_always_uses_b1_per_path() -> None:
         [f.result(timeout=10) for f in futs]
 
     assert processor.call_sizes, "no encode calls recorded"
-    assert all(n == 1 for n in processor.call_sizes), (
-        f"Expected all B=1 encodes; got sizes: {processor.call_sizes}"
-    )
+    assert all(
+        n == 1 for n in processor.call_sizes
+    ), f"Expected all B=1 encodes; got sizes: {processor.call_sizes}"
 
 
 def test_batched_encoder_deduplicates_same_path_in_one_drain() -> None:
@@ -110,9 +107,9 @@ def test_batched_encoder_deduplicates_same_path_in_one_drain() -> None:
         futs = [pool.submit(encoder.encode, "dup.wav") for _ in range(4)]
         results = [f.result(timeout=10) for f in futs]
 
-    assert len(processor.call_sizes) == 1, (
-        f"Expected 1 encode for 4 identical paths; got {len(processor.call_sizes)}"
-    )
+    assert (
+        len(processor.call_sizes) == 1
+    ), f"Expected 1 encode for 4 identical paths; got {len(processor.call_sizes)}"
     assert all(r.tolist() == [42, 43] for r in results)
 
 

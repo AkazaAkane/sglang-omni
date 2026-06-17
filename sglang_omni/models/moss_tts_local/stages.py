@@ -362,8 +362,8 @@ class CachedReferenceEncoder:
         key = _reference_path_cache_key(path)
         if key is None:
             return self._encoder.encode(path)  # uncacheable (URL/missing) -> bypass
-        encode_fn = (
-            lambda: self._canonical_encoder.encode_file(path)
+        encode_fn = lambda: (
+            self._canonical_encoder.encode_file(path)
             if self._canonical_encoder is not None
             else self._encoder.encode(path)
         )
