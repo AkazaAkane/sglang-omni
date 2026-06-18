@@ -126,8 +126,8 @@ Reference encodes are cached (LRU) and coalesced into batched codec calls, so re
 
 ### Streaming
 
-Set `"stream": true` and `"response_format": "pcm"` to receive raw 48 kHz mono PCM
-chunks in real time. Pipe the stream through `ffmpeg` when you want a playable WAV file:
+Set `"stream": true`, `"response_format": "pcm"`, and `"stream_format": "audio"` to receive raw
+48 kHz mono PCM chunks in real time. Pipe the stream through `ffmpeg` when you want a playable WAV file:
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -137,7 +137,8 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
     "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
     "ref_text": "We asked over twenty different people, and they all said it was his.",
     "stream": true,
-    "response_format": "pcm"
+    "response_format": "pcm",
+    "stream_format": "audio"
   }' \
   | ffmpeg -f s16le -ar 48000 -ac 1 -i pipe:0 output_stream.wav
 ```
@@ -197,6 +198,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `references` | `null` | Reference clip for cloning; each item has `audio_path` and `text` |
 | `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `stream` | `false` | Stream raw PCM audio chunks (with `response_format: pcm`) |
+| `stream_format` | `sse` | Set to `audio` when piping raw PCM bytes directly into an audio decoder |
 | `language` | `null` | Optional target-language hint; omit to let the model infer |
 | `instructions` | `null` | Optional free-text style directive |
 | `token_count` / `duration_tokens` | `null` | Target duration in codec frames; must be `> 0` |
