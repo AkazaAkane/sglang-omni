@@ -1231,11 +1231,17 @@ class MingOmniTalker(nn.Module):
 
         for text_ori in text_list:
             length = len(text_ori)
-            if len(cache_position) == 0:
-                cache_position.update({count: (0, length - 1)})
+            previous_segment_positions = [
+                position
+                for key, position in cache_position.items()
+                if isinstance(key, int)
+            ]
+            if not previous_segment_positions:
+                segment_start_idx = 0
             else:
-                end_idx = list(cache_position.values())[-1][1] + 1
-                cache_position.update({count: (end_idx, end_idx + length - 1)})
+                segment_start_idx = previous_segment_positions[-1][1] + 1
+            segment_end_idx = segment_start_idx + length - 1
+            cache_position.update({count: (segment_start_idx, segment_end_idx)})
 
             if not is_chinese(text_ori):
                 text = normalize_numbers(text_ori)
@@ -1248,8 +1254,9 @@ class MingOmniTalker(nn.Module):
             if text and text[0] == "\uff0c":
                 text = text[1:]
 
-            use_stream = stream and (count == 0)
+            use_stream = stream
             all_wavs: list = []
+            next_start_idx = segment_start_idx
 
             segment_max_decode_steps = self.duration_capped_steps(
                 text_len=len(text),
@@ -1289,26 +1296,24 @@ class MingOmniTalker(nn.Module):
                     tts_speech.shape[-1] / audio_detokenizer.config.sample_rate
                 )
                 if use_stream:
-                    if idx == 0:
-                        this_start_idx = 0
-                        this_end_idx = min(math.ceil(this_dura * wds_lg), length) - 1
-                    else:
-                        this_start_idx = min(
-                            list(cache_position.values())[-1][1] + 1, length - 1
+                    this_start_idx = min(next_start_idx, segment_end_idx)
+                    this_end_idx = (
+                        min(
+                            math.ceil(this_dura * wds_lg) + this_start_idx,
+                            segment_end_idx + 1,
                         )
-                        this_end_idx = (
-                            min(
-                                (math.ceil(this_dura * wds_lg) + this_start_idx), length
-                            )
-                            - 1
-                        )
+                        - 1
+                    )
+                    next_start_idx = this_end_idx + 1
                     cache_position.update(
                         {f"{count}_{idx}": (this_start_idx, this_end_idx)}
                     )
+                    rel_start_idx = this_start_idx - segment_start_idx
+                    rel_end_idx = this_end_idx - segment_start_idx
                     this_text_ori = (
                         ""
                         if this_start_idx == this_end_idx
-                        else text_ori[this_start_idx : this_end_idx + 1]
+                        else text_ori[rel_start_idx : rel_end_idx + 1]
                     )
                     all_wavs.append(tts_speech)
                     yield (

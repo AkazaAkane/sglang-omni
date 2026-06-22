@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -286,6 +287,72 @@ def _fake_detokenizer(sample_rate=44100, vae_patch_size=4, hop_size=480):
     encoder = SimpleNamespace(patch_size=vae_patch_size, hop_size=hop_size)
     config = SimpleNamespace(sample_rate=sample_rate)
     return SimpleNamespace(encoder=encoder, config=config)
+
+
+def test_process_segment_streams_every_internal_segment():
+    import torch as _torch
+
+    talker = object.__new__(MingOmniTalker)
+    talker.normalizer = SimpleNamespace(normalize=lambda text: text)
+    talker.patch_size = 2
+    detok = _fake_detokenizer(sample_rate=10)
+    recorded_stream_flags = []
+
+    def fake_tts_job(**kwargs):
+        recorded_stream_flags.append(kwargs["stream"])
+        yield {"tts_speech": _torch.zeros(10, dtype=_torch.float32)}
+
+    talker.tts_job = fake_tts_job
+    cache_position = {}
+
+    first_outputs = list(
+        MingOmniTalker._process_segment(
+            talker,
+            "First segment.",
+            prompt=None,
+            instruction=None,
+            spk_emb=None,
+            audio_detokenizer=detok,
+            prompt_text=None,
+            prompt_wav_lat=None,
+            prompt_wav_emb=None,
+            stream=True,
+            count=0,
+            cache_position=cache_position,
+            max_length=50,
+            wds_lg_zh=6.07,
+            wds_lg_en=16,
+        )
+    )
+    second_outputs = list(
+        MingOmniTalker._process_segment(
+            talker,
+            "Second segment.",
+            prompt=None,
+            instruction=None,
+            spk_emb=None,
+            audio_detokenizer=detok,
+            prompt_text=None,
+            prompt_wav_lat=None,
+            prompt_wav_emb=None,
+            stream=True,
+            count=1,
+            cache_position=cache_position,
+            max_length=50,
+            wds_lg_zh=6.07,
+            wds_lg_en=16,
+        )
+    )
+
+    assert recorded_stream_flags == [True, True]
+    assert first_outputs[0][2] == (0, len("First segment.") - 1)
+    assert second_outputs[0][2] == (
+        len("First segment."),
+        len("First segment.") + len("Second segment.") - 1,
+    )
+    assert "stream and (count == 0)" not in inspect.getsource(
+        MingOmniTalker._process_segment
+    )
 
 
 def test_duration_capped_steps_short_text_uses_floor():
