@@ -1231,17 +1231,24 @@ class MingOmniTalker(nn.Module):
 
         for text_ori in text_list:
             length = len(text_ori)
-            previous_segment_positions = [
-                position
+            previous_segment_items = [
+                (key, position)
                 for key, position in cache_position.items()
                 if isinstance(key, int)
             ]
-            if not previous_segment_positions:
+            segment_key = (
+                max(key for key, _ in previous_segment_items) + 1
+                if previous_segment_items
+                else 0
+            )
+            if not previous_segment_items:
                 segment_start_idx = 0
             else:
-                segment_start_idx = previous_segment_positions[-1][1] + 1
+                segment_start_idx = max(
+                    position[1] for _, position in previous_segment_items
+                ) + 1
             segment_end_idx = segment_start_idx + length - 1
-            cache_position.update({count: (segment_start_idx, segment_end_idx)})
+            cache_position.update({segment_key: (segment_start_idx, segment_end_idx)})
 
             if not is_chinese(text_ori):
                 text = normalize_numbers(text_ori)
@@ -1306,7 +1313,7 @@ class MingOmniTalker(nn.Module):
                     )
                     next_start_idx = this_end_idx + 1
                     cache_position.update(
-                        {f"{count}_{idx}": (this_start_idx, this_end_idx)}
+                        {f"{segment_key}_{idx}": (this_start_idx, this_end_idx)}
                     )
                     rel_start_idx = this_start_idx - segment_start_idx
                     rel_end_idx = this_end_idx - segment_start_idx
@@ -1319,12 +1326,17 @@ class MingOmniTalker(nn.Module):
                     yield (
                         tts_speech,
                         this_text_ori,
-                        cache_position[f"{count}_{idx}"],
+                        cache_position[f"{segment_key}_{idx}"],
                         this_dura * 1000,
                     )
                 else:
                     all_wavs.append(tts_speech)
-                    yield tts_speech, text_ori, cache_position[count], this_dura * 1000
+                    yield (
+                        tts_speech,
+                        text_ori,
+                        cache_position[segment_key],
+                        this_dura * 1000,
+                    )
 
     def omni_audio_generation(
         self,

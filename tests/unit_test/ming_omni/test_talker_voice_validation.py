@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -350,9 +349,57 @@ def test_process_segment_streams_every_internal_segment():
         len("First segment."),
         len("First segment.") + len("Second segment.") - 1,
     )
-    assert "stream and (count == 0)" not in inspect.getsource(
-        MingOmniTalker._process_segment
+
+
+def test_process_segment_uses_distinct_cache_keys_for_cut_fragments(monkeypatch):
+    import torch as _torch
+    import sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker as talker_mod
+
+    talker = object.__new__(MingOmniTalker)
+    talker.normalizer = SimpleNamespace(normalize=lambda text: text)
+    talker.patch_size = 2
+    detok = _fake_detokenizer(sample_rate=10)
+    recorded_stream_flags = []
+
+    def fake_tts_job(**kwargs):
+        recorded_stream_flags.append(kwargs["stream"])
+        yield {"tts_speech": _torch.zeros(10, dtype=_torch.float32)}
+
+    monkeypatch.setattr(
+        talker_mod,
+        "cut_text_by_semantic_length",
+        lambda text, max_length: {"fragments": ["Alpha.", "Beta."]},
     )
+    talker.tts_job = fake_tts_job
+    cache_position = {}
+
+    outputs = list(
+        MingOmniTalker._process_segment(
+            talker,
+            "Alpha. Beta.",
+            prompt=None,
+            instruction=None,
+            spk_emb=None,
+            audio_detokenizer=detok,
+            prompt_text=None,
+            prompt_wav_lat=None,
+            prompt_wav_emb=None,
+            stream=True,
+            count=0,
+            cache_position=cache_position,
+            max_length=50,
+            wds_lg_zh=6.07,
+            wds_lg_en=16,
+        )
+    )
+
+    assert recorded_stream_flags == [True, True]
+    assert outputs[0][2] == (0, len("Alpha.") - 1)
+    assert outputs[1][2] == (len("Alpha."), len("Alpha.") + len("Beta.") - 1)
+    assert cache_position[0] == (0, len("Alpha.") - 1)
+    assert cache_position[1] == (len("Alpha."), len("Alpha.") + len("Beta.") - 1)
+    assert cache_position["0_0"] == outputs[0][2]
+    assert cache_position["1_0"] == outputs[1][2]
 
 
 def test_duration_capped_steps_short_text_uses_floor():
