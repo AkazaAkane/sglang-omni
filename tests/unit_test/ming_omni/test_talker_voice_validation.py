@@ -353,6 +353,7 @@ def test_process_segment_streams_every_internal_segment():
 
 def test_process_segment_uses_distinct_cache_keys_for_cut_fragments(monkeypatch):
     import torch as _torch
+
     import sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker as talker_mod
 
     talker = object.__new__(MingOmniTalker)

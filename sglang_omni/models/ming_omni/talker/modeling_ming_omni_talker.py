@@ -1244,9 +1244,9 @@ class MingOmniTalker(nn.Module):
             if not previous_segment_items:
                 segment_start_idx = 0
             else:
-                segment_start_idx = max(
-                    position[1] for _, position in previous_segment_items
-                ) + 1
+                segment_start_idx = (
+                    max(position[1] for _, position in previous_segment_items) + 1
+                )
             segment_end_idx = segment_start_idx + length - 1
             cache_position.update({segment_key: (segment_start_idx, segment_end_idx)})
 
