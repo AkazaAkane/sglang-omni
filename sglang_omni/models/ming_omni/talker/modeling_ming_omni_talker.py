@@ -942,7 +942,17 @@ class MingOmniTalker(nn.Module):
                             stream=True,
                             last_chunk=last_chunk,
                         )
-                        yield {"tts_speech": this_tts_speech.cpu()}
+                        (
+                            this_tts_speech,
+                            self.sil_holder_cache[this_uuid],
+                        ) = self.silence_holder(
+                            this_tts_speech,
+                            audio_detokenizer.config.sample_rate,
+                            self.sil_holder_cache[this_uuid],
+                            last_chunk,
+                        )
+                        if this_tts_speech.numel() > 0:
+                            yield {"tts_speech": this_tts_speech.cpu()}
                 else:
                     future.result()
                     this_tts_speech_token = self.tts_speech_token_dict[this_uuid]
