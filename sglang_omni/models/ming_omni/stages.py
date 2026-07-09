@@ -125,7 +125,7 @@ def _project_prompt_for_usage(prompt: Any) -> dict[str, Any] | None:
     input_ids = prompt.get("input_ids")
     if input_ids is None:
         return None
-    return {"input_ids": input_ids}
+    return {"input_ids": _copy_mutable_containers(input_ids)}
 
 
 def _slim_thinker_out(thinker_out: Any) -> dict[str, Any] | None:
