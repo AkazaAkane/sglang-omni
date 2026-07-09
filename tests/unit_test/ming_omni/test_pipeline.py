@@ -26,8 +26,10 @@ def test_ming_text_config_imports_and_uses_current_stage_schema() -> None:
     assert config.terminal_stages == ["decode"]
     stages = {stage.name: stage for stage in config.stages}
     assert stages["thinker"].stream_to == ["decode"]
-    assert stages["thinker"].project_payload["decode"].endswith(
-        "project_thinker_to_decode"
+    assert (
+        stages["thinker"]
+        .project_payload["decode"]
+        .endswith("project_thinker_to_decode")
     )
     assert stages["decode"].can_accept_stream_before_payload is True
     assert all(
@@ -75,11 +77,15 @@ def test_ming_speech_config_routes_decode_and_talker() -> None:
     )
     assert stages["thinker"].next == ["decode", "talker"]
     assert stages["thinker"].stream_to == ["decode"]
-    assert stages["thinker"].project_payload["decode"].endswith(
-        "project_thinker_to_decode"
+    assert (
+        stages["thinker"]
+        .project_payload["decode"]
+        .endswith("project_thinker_to_decode")
     )
-    assert stages["thinker"].project_payload["talker"].endswith(
-        "project_thinker_to_talker"
+    assert (
+        stages["thinker"]
+        .project_payload["talker"]
+        .endswith("project_thinker_to_talker")
     )
     assert stages["decode"].terminal is True
     assert stages["decode"].can_accept_stream_before_payload is True
@@ -95,11 +101,15 @@ def test_ming_streaming_speech_config_projects_thinker_payloads() -> None:
     config = MingOmniStreamingSpeechPipelineConfig(model_path="dummy")
     stages = {stage.name: stage for stage in config.stages}
 
-    assert stages["thinker"].project_payload["decode"].endswith(
-        "project_thinker_to_decode"
+    assert (
+        stages["thinker"]
+        .project_payload["decode"]
+        .endswith("project_thinker_to_decode")
     )
-    assert stages["thinker"].project_payload["segmenter"].endswith(
-        "project_thinker_to_segmenter"
+    assert (
+        stages["thinker"]
+        .project_payload["segmenter"]
+        .endswith("project_thinker_to_segmenter")
     )
 
 
@@ -865,16 +875,12 @@ def test_ming_merge_clears_encoder_outputs_after_building_thinker_inputs() -> No
             ),
             AUDIO_STAGE: payload(
                 MingOmniPipelineState(
-                    encoder_outs={
-                        AUDIO_STAGE: {"audio_embeds": torch.ones(1, 4, 8)}
-                    }
+                    encoder_outs={AUDIO_STAGE: {"audio_embeds": torch.ones(1, 4, 8)}}
                 )
             ),
             IMAGE_STAGE: payload(
                 MingOmniPipelineState(
-                    encoder_outs={
-                        IMAGE_STAGE: {"image_embeds": torch.ones(1, 2, 8)}
-                    }
+                    encoder_outs={IMAGE_STAGE: {"image_embeds": torch.ones(1, 2, 8)}}
                 )
             ),
         }
