@@ -1048,7 +1048,25 @@ class Stage:
             to_stage=target,
             shm_metadata=metadata,
         )
-        hop_metadata: dict[str, Any] = {"to_stage": target}
+        relay_info = metadata.get("relay_info", {})
+        transfer_info = (
+            relay_info.get("transfer_info", {}) if isinstance(relay_info, dict) else {}
+        )
+        relay_payload_bytes = int(transfer_info.get("size", 0) or 0)
+        inline_tensor_bytes = sum(
+            int(info.get("size", 0) or 0)
+            for info in metadata.get("tensor_info", [])
+            if isinstance(info, dict)
+        )
+        pickle_b64 = metadata.get("payload_pickle", "")
+        pickle_bytes = len(pickle_b64)
+
+        hop_metadata: dict[str, Any] = {
+            "to_stage": target,
+            "relay_payload_bytes": relay_payload_bytes,
+            "inline_tensor_bytes": inline_tensor_bytes,
+            "payload_pickle_b64_bytes": pickle_bytes,
+        }
         tensor_ref_stats = metadata.get("tensor_ref_stats")
         if tensor_ref_stats is not None:
             hop_metadata.update(tensor_ref_stats)
