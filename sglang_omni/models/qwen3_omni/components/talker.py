@@ -962,10 +962,13 @@ class Qwen3OmniTalker(nn.Module):
         )
         # Note (akazaakane): int64-typed; rows 0-3 hold floats bit-cast via
         # .view(torch.float64) so one copy covers both float and int params.
+        # Note (akazaakane): device="cpu" is required — model init runs under
+        # a cuda default-device context, and only CPU tensors can be pinned.
         self._sampling_staging_cpu = torch.zeros(
             6,
             max_batch_size,
             dtype=torch.int64,
+            device="cpu",
             pin_memory=device.type == "cuda",
         )
         self._sampling_staging_gpu = torch.zeros(
