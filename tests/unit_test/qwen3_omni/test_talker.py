@@ -2157,7 +2157,7 @@ def test_build_talker_request_wall_clock(seq_len: int) -> None:
 
 def _talker_seed_self(max_bs: int = 4, vocab: int = 8) -> SimpleNamespace:
     """Minimal stand-in carrying only the buffers prepare_decode_buffers writes."""
-    return SimpleNamespace(
+    fake = SimpleNamespace(
         _repetition_mask=torch.zeros(max_bs, vocab, dtype=torch.bool),
         _suppress_mask=torch.zeros(max_bs, vocab, dtype=torch.bool),
         _repetition_penalties=torch.ones(max_bs, 1),
@@ -2166,7 +2166,19 @@ def _talker_seed_self(max_bs: int = 4, vocab: int = 8) -> SimpleNamespace:
         _sampling_top_ks=torch.ones(max_bs, dtype=torch.long),
         _sampling_min_ps=torch.zeros(max_bs),
         _sampling_seeds=torch.zeros(max_bs, dtype=torch.long),
+        _sampling_staging_cpu=torch.zeros(6, max_bs, dtype=torch.int64),
+        _sampling_staging_gpu=torch.zeros(6, max_bs, dtype=torch.int64),
+        _sampling_staging_event=None,
+        _sampled_token_ids=torch.zeros(max_bs, dtype=torch.long),
+        _decode_prep_rids=None,
+        _decode_prep_out_lens=[],
+        _decode_prep_rep_rows=None,
     )
+    fake._reuse_decode_buffers = Qwen3OmniTalker._reuse_decode_buffers.__get__(fake)
+    fake.invalidate_decode_buffers = Qwen3OmniTalker.invalidate_decode_buffers.__get__(
+        fake
+    )
+    return fake
 
 
 def _talker_seed_req(seed: int | None, rid: str) -> SimpleNamespace:
@@ -2212,3 +2224,97 @@ def test_talker_prepare_decode_buffers_unseeded_seed_is_rank_shared() -> None:
     assert int(fake._sampling_seeds[1]) == derive_sampling_seed(
         "sglang-omni-unseeded-row", "unseeded"
     )
+
+
+def _talker_prep_req(
+    rid: str,
+    *,
+    penalty: float = 1.0,
+    output_ids: list[int] | None = None,
+    suppress: list[int] | None = None,
+) -> SimpleNamespace:
+    sp = SimpleNamespace(
+        repetition_penalty=penalty,
+        temperature=0.8,
+        top_p=0.9,
+        top_k=20,
+        min_p=0.0,
+        sampling_seed=7,
+    )
+    req = SimpleNamespace(
+        sampling_params=sp,
+        output_ids=list(output_ids or []),
+        _codec_suppress_tokens=None,
+        rid=rid,
+    )
+    return SimpleNamespace(
+        data=SimpleNamespace(req=req, suppress_tokens=list(suppress or []) or None)
+    )
+
+
+def test_talker_prepare_decode_buffers_steady_state_reuse() -> None:
+    fake = _talker_seed_self()
+    requests = [
+        _talker_prep_req("a", penalty=1.5, output_ids=[2], suppress=[3]),
+        _talker_prep_req("b", penalty=1.0, output_ids=[4]),
+    ]
+    Qwen3OmniTalker.prepare_decode_buffers(fake, requests)
+
+    assert float(fake._repetition_penalties[0, 0]) == pytest.approx(1.5)
+    assert float(fake._sampling_temperatures[0, 0]) == pytest.approx(0.8)
+    assert float(fake._sampling_top_ps[0]) == pytest.approx(0.9)
+    assert int(fake._sampling_top_ks[0]) == 20
+    assert float(fake._sampling_min_ps[0]) == pytest.approx(0.0)
+    assert bool(fake._repetition_mask[0, 2]) and bool(fake._suppress_mask[0, 3])
+    assert not fake._repetition_mask[1].any()
+
+    fake._sampling_temperatures[0, 0] = 123.0
+
+    fake._sampled_token_ids[0] = 5
+    fake._sampled_token_ids[1] = 6
+    requests[0].data.req.output_ids.append(5)
+    requests[1].data.req.output_ids.append(6)
+    Qwen3OmniTalker.prepare_decode_buffers(fake, requests)
+
+    assert float(fake._sampling_temperatures[0, 0]) == 123.0
+    assert bool(fake._repetition_mask[0, 2]) and bool(fake._repetition_mask[0, 5])
+    assert not fake._repetition_mask[1].any()
+    assert bool(fake._suppress_mask[0, 3])
+
+    fresh = _talker_seed_self()
+    Qwen3OmniTalker.prepare_decode_buffers(fresh, requests)
+    assert torch.equal(fake._repetition_mask, fresh._repetition_mask)
+    assert torch.equal(fake._suppress_mask, fresh._suppress_mask)
+
+
+def test_talker_prepare_decode_buffers_rebuild_triggers() -> None:
+    def _prepared() -> tuple[SimpleNamespace, list[SimpleNamespace]]:
+        fake = _talker_seed_self()
+        requests = [
+            _talker_prep_req("a", penalty=1.5, output_ids=[2]),
+            _talker_prep_req("b", penalty=1.5, output_ids=[4]),
+        ]
+        Qwen3OmniTalker.prepare_decode_buffers(fake, requests)
+        fake._sampling_temperatures[0, 0] = 123.0
+        return fake, requests
+
+    def _advance(requests: list[SimpleNamespace]) -> None:
+        for sched_req in requests:
+            sched_req.data.req.output_ids.append(5)
+
+    fake, requests = _prepared()
+    _advance(requests)
+    Qwen3OmniTalker.prepare_decode_buffers(fake, list(reversed(requests)))
+    assert float(fake._sampling_temperatures[0, 0]) == pytest.approx(0.8)
+
+    fake, requests = _prepared()
+    _advance(requests)
+    requests[0].data.req.output_ids.append(6)
+    Qwen3OmniTalker.prepare_decode_buffers(fake, requests)
+    assert float(fake._sampling_temperatures[0, 0]) == pytest.approx(0.8)
+
+    fake, requests = _prepared()
+    _advance(requests)
+    fake.invalidate_decode_buffers()
+    Qwen3OmniTalker.prepare_decode_buffers(fake, requests)
+    assert float(fake._sampling_temperatures[0, 0]) == pytest.approx(0.8)
