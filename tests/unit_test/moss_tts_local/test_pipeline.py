@@ -1854,12 +1854,15 @@ def test_async_launch_resolve_matches_sync_collect():
     ra = _make_runner()
     req_a, res_a = _sched_req(), _result()
     host_buf = ra.post_decode_launch(res_a, None, [req_a])
-    # Launch hands resolve a private device snapshot of the published ids.
+    # Launch hands resolve a pinned snapshot packing [id | frame-row] per request:
+    # column 0 is the published ids, columns 1: the frame rows.
     assert host_buf is not None
-    assert torch.equal(host_buf, res_a.next_token_ids)
+    num_channels = 12 + 1  # n_vq + 1
+    assert host_buf.shape == (1, 1 + num_channels)
+    assert torch.equal(host_buf[:, 0], res_a.next_token_ids)
     # Simulate the next decode step overwriting the aliased published tensor in
     # place (the output_ids -> input_ids clobber): resolve must still recover the
-    # real ids from the snapshot.
+    # real ids from the pinned snapshot (a separate host buffer).
     res_a.next_token_ids.zero_()
     ra.post_decode_resolve(host_buf, res_a, None, None, [req_a])
 

@@ -412,26 +412,62 @@ class MossTTSLocalModelRunner(ModelRunner):
                 rids=[requests[i].request_id for i in emit_indices],
                 pool_rows=emit_pool_rows,
                 rows=emit_rows,
+                batch_indices=emit_indices,
             )
         # Always return rows so both the sync inline path and the async launch
         # publish next_token_ids; an all-chunked batch just attaches no journal.
         return rows, end_id
 
+    def _decode_staging(
+        self, bs: int, width: int, dtype: torch.dtype, device: torch.device
+    ) -> torch.Tensor:
+        """Persistent device staging for the packed ``[id | frame-row]`` snapshot.
+
+        Lazily allocated and grown so one contiguous async D2H at launch moves
+        both the published radix id (column 0) and the frame row (columns 1:)
+        per request. The single reused buffer is safe under single-stream
+        ordering: launch(N)'s D2H is enqueued before launch(N+1) overwrites it.
+        """
+        buf = getattr(self, "_moss_decode_staging", None)
+        if (
+            buf is None
+            or buf.shape[0] < bs
+            or int(buf.shape[1]) != width
+            or buf.dtype != dtype
+            or buf.device != device
+        ):
+            buf = torch.empty((bs, width), dtype=dtype, device=device)
+            self._moss_decode_staging = buf
+        return buf
+
     def post_decode_launch(self, result: Any, forward_batch: Any, requests: list):
         """Async-decode GPU half of ``post_decode``: run the frame micro-decode
-        (``_run_frame_decode``) and publish the device-computed radix ids, no
-        host sync. Returns a private device snapshot of those ids for resolve:
-        the base aliases ``next_token_ids`` onto ``output_ids``, which the next
-        step overwrites in place before this step's lagged resolve, clobbering
-        the stop id and silently dropping a bs=1 eos finish (4096-frame runaway).
-        The clone preserves it; resolve swaps it back.
+        (``_run_frame_decode``), publish the device-computed radix ids (no host
+        sync, so the next step's AR input chain is available at launch), then
+        pack ``[id, text_or_stop, audio_codebooks...]`` per request and issue one
+        non-blocking D2H into a pinned ping-pong host buffer.
+
+        Returns that pinned buffer for resolve. The async copy is enqueued on the
+        stream after the frame decode writes the ids and before the next step's
+        kernels, so it captures the pre-clobber ids — the correctness role the old
+        device ``.clone()`` snapshot played: the base aliases ``next_token_ids``
+        onto ``output_ids``, which the next step overwrites in place before this
+        step's lagged resolve, clobbering the stop id and silently dropping a bs=1
+        eos finish (4096-frame runaway). The pinned column 0 preserves it.
         """
         if not requests:
             return None
         rows, end_id = self._run_frame_decode(result, forward_batch, requests)
         next_token_ids = self._row_radix_token_ids(rows, rows[:, 0], end_id)
         result.next_token_ids = next_token_ids
-        return next_token_ids.clone()
+        bs = len(requests)
+        width = 1 + int(rows.shape[1])
+        staging = self._decode_staging(bs, width, rows.dtype, rows.device)
+        staging[:bs, 0] = next_token_ids
+        staging[:bs, 1:] = rows
+        host_buf = self._next_host_staging((bs, width), staging.dtype)
+        host_buf[:bs].copy_(staging[:bs], non_blocking=True)
+        return host_buf
 
     def post_decode_resolve(
         self,
@@ -441,14 +477,20 @@ class MossTTSLocalModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        """Async-decode host half: restore the launch-time ``next_token_ids``
-        snapshot (a pointer swap) so the shared ``_finalize`` tail reads the real
-        stop id, which the next step's in-place write clobbered from the aliased
-        tensor before this lagged resolve.
+        """Async-decode host half: point ``next_token_ids`` at the pinned
+        snapshot's column 0 (a CPU tensor, so the downstream ``tolist()`` in
+        output processing is syncless) so the shared ``_finalize`` tail reads the
+        real stop id, which the next step's in-place write clobbered from the
+        aliased tensor before this lagged resolve. Stash the full snapshot so
+        ``post_process_outputs`` streams frame rows from the same pinned copy
+        instead of a second D2H.
         """
-        del forward_batch, schedule_batch, requests
-        if launch_buf is not None and result is not None:
-            result.next_token_ids = launch_buf
+        del forward_batch, schedule_batch
+        if launch_buf is None or result is None:
+            return
+        bs = len(requests)
+        result.next_token_ids = launch_buf[:bs, 0]
+        result.moss_launch_buf = launch_buf
 
     @staticmethod
     def _row_radix_token_ids(
@@ -619,6 +661,11 @@ class MossTTSLocalModelRunner(ModelRunner):
                 "MOSS-TTS Local journal/batch alignment broken: "
                 f"{journal.rids} != {expected_rids}"
             )
+        # Async path: resolve stashed the full-batch pinned snapshot, so stream
+        # frame rows from it (columns 1:) instead of a second D2H. Sync path:
+        # launch_buf is None and we copy journal.rows to host once below.
+        launch_buf = getattr(result, "moss_launch_buf", None)
+        batch_indices = journal.batch_indices
         rows_cpu: torch.Tensor | None = None
         for i, sched_req in enumerate(expected_reqs):
             # Overrun: a request finished or retracted in a PRIOR step is still
@@ -645,15 +692,23 @@ class MossTTSLocalModelRunner(ModelRunner):
                 continue
             if self._outbox is None:
                 continue
-            if rows_cpu is None:
-                # One D2H per step regardless of how many requests stream.
-                rows_cpu = journal.rows.detach().to("cpu", torch.long)
+            if launch_buf is not None and batch_indices is not None:
+                # Already on the host (pinned): the frame row for journal
+                # position i is its full-batch staging row, columns 1:.
+                stream_row = launch_buf[batch_indices[i], 1:]
+            else:
+                if rows_cpu is None:
+                    # One D2H per step regardless of how many requests stream.
+                    rows_cpu = journal.rows.detach().to("cpu", torch.long)
+                stream_row = rows_cpu[i]
             self._outbox.put(
                 OutgoingMessage(
                     request_id=sched_req.request_id,
                     type="stream",
                     target=self._vocoder_target,
-                    data=rows_cpu[i].clone(),
+                    # clone before the vocoder thread reads it: the pinned slot is
+                    # ping-ponged and the sync copy is a shared per-step tensor.
+                    data=stream_row.clone(),
                     metadata=stream_metadata,
                 )
             )

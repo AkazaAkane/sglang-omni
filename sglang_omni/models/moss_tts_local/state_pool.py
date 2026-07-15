@@ -299,6 +299,11 @@ class MossTTSLocalDecodeJournal:
     assertion at apply time) and the pool rows the step touched; it is attached
     to the step's ``batch_result`` so the async-decode lookahead window (#734)
     keeps it alive until resolve.
+
+    ``batch_indices`` maps each journal position (emit rows only; chunked rows
+    are excluded) back to its full-batch row, so the async path can stream a
+    frame row out of the full-batch pinned staging snapshot without a second
+    D2H. ``None`` on the sync path, which copies ``rows`` to host directly.
     """
 
     def __init__(
@@ -306,7 +311,9 @@ class MossTTSLocalDecodeJournal:
         rids: list[str],
         pool_rows: list[int],
         rows: torch.Tensor,
+        batch_indices: list[int] | None = None,
     ) -> None:
         self.rids = rids
         self.pool_rows = pool_rows
         self.rows = rows
+        self.batch_indices = batch_indices
