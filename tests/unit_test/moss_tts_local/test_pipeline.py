@@ -1820,6 +1820,9 @@ def test_async_launch_resolve_matches_sync_collect():
         runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
         runner.model = model
         runner._outbox = None
+        # async-decode base-runner state (normally set in ModelRunner.__init__)
+        runner._staging_slot = 0
+        runner._host_staging_buffers = []
         return runner
 
     def _sched_req():
@@ -1923,6 +1926,9 @@ def test_async_resolve_preserves_stop_id_through_output_ids_clobber():
     )
     runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
     runner.model = model
+    # async-decode base-runner state (normally set in ModelRunner.__init__)
+    runner._staging_slot = 0
+    runner._host_staging_buffers = []
 
     data = types.SimpleNamespace(
         req=None,
@@ -1991,6 +1997,9 @@ def test_chunked_rows_do_not_advance_sampling_steps():
         runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
         runner.model = model
         runner._outbox = None
+        # async-decode base-runner state (normally set in ModelRunner.__init__)
+        runner._staging_slot = 0
+        runner._host_staging_buffers = []
         return runner
 
     def _result():
