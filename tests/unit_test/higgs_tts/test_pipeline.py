@@ -366,7 +366,11 @@ def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
 
         def encode_reference(self, waveform, sample_rate: int) -> torch.Tensor:
             self.calls += 1
-            return torch.tensor([[11, 12], [21, 22]], dtype=torch.long)
+            offset = self.calls * 100
+            return torch.tensor(
+                [[offset + 11, offset + 12], [offset + 21, offset + 22]],
+                dtype=torch.long,
+            )
 
     cache = get_speaker_artifact_cache()
     cache.clear()
@@ -382,14 +386,20 @@ def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
     fake_codec.calls = 0
     encode = scheduler._fn
 
-    def make_payload(request_id: str) -> StagePayload:
+    def make_payload(
+        request_id: str,
+        *,
+        reference_code_cache_key: str = "waveform:sr:24000:uploaded",
+        uploaded_voice_created_at: int = 7,
+        waveform_value: float = 0.0,
+    ) -> StagePayload:
         state = HiggsTtsState(
-            reference_waveform=torch.zeros(1, 1, 16),
-            reference_code_cache_key="waveform:sr:24000:uploaded",
+            reference_waveform=torch.full((1, 1, 16), waveform_value),
+            reference_code_cache_key=reference_code_cache_key,
             target_text="hello",
             reference_text="speaker",
             uploaded_voice_name="guide",
-            uploaded_voice_created_at=7,
+            uploaded_voice_created_at=uploaded_voice_created_at,
             num_codebooks=2,
         )
         return StagePayload(
@@ -403,12 +413,27 @@ def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
     cache.clear_voice("guide")
     third = encode(make_payload("third"))
 
+    assert fake_codec.calls == 1
+
+    reuploaded = encode(
+        make_payload(
+            "reuploaded",
+            reference_code_cache_key="waveform:sr:24000:uploaded-v2",
+            uploaded_voice_created_at=8,
+            waveform_value=1.0,
+        )
+    )
+
     assert fake_codec.calls == 2
     assert (
         first.data["reference_codes_delayed"] == second.data["reference_codes_delayed"]
     )
     assert (
         third.data["reference_codes_delayed"] == first.data["reference_codes_delayed"]
+    )
+    assert (
+        reuploaded.data["reference_codes_delayed"]
+        != first.data["reference_codes_delayed"]
     )
 
 
@@ -1255,6 +1280,42 @@ def test_higgs_initial_chunk_resumes_after_followup_boundary() -> None:
         msg for msg in _drain_higgs_outbox(scheduler) if msg.type == "stream"
     ]
     assert len(second_streams) == 1
+
+
+def test_higgs_stream_contract_change_rejects_chunk_without_buffering() -> None:
+    scheduler = HiggsStreamingVocoderScheduler(_FakeHiggsStreamingCodec())
+    payload = _higgs_stream_payload("req", stream=True, delayed_rows=[[1, 2, 3]])
+    scheduler._on_streaming_new_request("req", payload)
+
+    row = torch.tensor([1, 2, 3], dtype=torch.long)
+    with pytest.raises(ValueError, match="num_codebooks changed for"):
+        scheduler._on_chunk("req", _higgs_stream_item(row, num_codebooks=4))
+    with pytest.raises(ValueError, match="codebook_size changed for"):
+        scheduler._on_chunk("req", _higgs_stream_item(row, codebook_size=21))
+    assert scheduler._stream_states["req"].delayed_rows == []
+
+
+def test_higgs_stream_contract_requires_integer_values() -> None:
+    scheduler = HiggsStreamingVocoderScheduler(_FakeHiggsStreamingCodec())
+    payload = _higgs_stream_payload("req", stream=True, delayed_rows=[[1, 2, 3]])
+    scheduler._on_streaming_new_request("req", payload)
+
+    item = _higgs_stream_item(torch.tensor([1, 2, 3], dtype=torch.long))
+    item.metadata["num_codebooks"] = "three"
+    with pytest.raises(TypeError, match="must include integer"):
+        scheduler._on_chunk("req", item)
+    assert scheduler._stream_states["req"].delayed_rows == []
+
+
+def test_higgs_streaming_payload_missing_contract_fields_errors() -> None:
+    scheduler = HiggsStreamingVocoderScheduler(_FakeHiggsStreamingCodec())
+    payload = StagePayload(
+        request_id="req",
+        request=OmniRequest(inputs="", params={"stream": True}),
+        data={},
+    )
+    with pytest.raises(RuntimeError, match="is missing fields"):
+        scheduler._on_streaming_new_request("req", payload)
 
 
 def _drain_higgs_outbox(
