@@ -330,7 +330,9 @@ async def _drive_stream_until_registered(coordinator: Coordinator, request_id: s
     return task, error_sink, future
 
 
-def test_coordinator_stream_abort_cancels_future_without_unretrieved_exception() -> None:
+def test_coordinator_stream_abort_cancels_future_without_unretrieved_exception() -> (
+    None
+):
     """Aborting a streaming request cancels its completion future instead of
     setting an exception no one retrieves, so the event loop never reports a
     'Future exception was never retrieved' error."""
