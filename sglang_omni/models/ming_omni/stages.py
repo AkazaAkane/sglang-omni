@@ -10,11 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from sglang_omni.models.ming_omni.io import MingOmniPipelineState
-from sglang_omni.models.ming_omni.pipeline.next_stage import (
-    AUDIO_STAGE,
-    IMAGE_STAGE,
-    THINKER_STAGE,
-)
+from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
 from sglang_omni.models.ming_omni.tp_utils import validate_stage_tp_support
 from sglang_omni.proto import StagePayload
 
@@ -52,7 +48,6 @@ def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
     projected = MingOmniPipelineState(
         prompt=_project_prompt_for_usage(state.prompt),
         thinker_out=_slim_thinker_out(state.thinker_out),
-        engine_outputs=_slim_thinker_engine_outputs(state.engine_outputs),
         stream_state=_copy_mutable_containers(state.stream_state),
     )
     return _payload_with_state(payload, projected)
@@ -63,7 +58,6 @@ def project_thinker_to_talker(payload: StagePayload) -> StagePayload:
     projected = MingOmniPipelineState(
         prompt=_project_prompt_for_usage(state.prompt),
         thinker_out=_slim_thinker_out(state.thinker_out),
-        engine_outputs=_slim_thinker_engine_outputs(state.engine_outputs),
     )
     return _payload_with_state(payload, projected)
 
@@ -139,12 +133,6 @@ def _slim_thinker_out(thinker_out: Any) -> dict[str, Any] | None:
 
     projected["extra_model_outputs"] = {}
     return projected
-
-
-def _slim_thinker_engine_outputs(engine_outputs: dict[str, Any]) -> dict[str, Any]:
-    thinker_out = engine_outputs.get(THINKER_STAGE)
-    slim = _slim_thinker_out(thinker_out)
-    return {THINKER_STAGE: slim} if slim is not None else {}
 
 
 def _copy_mutable_containers(value: Any) -> Any:

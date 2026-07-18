@@ -113,6 +113,77 @@ def test_ming_streaming_speech_config_projects_thinker_payloads() -> None:
     )
 
 
+def test_ming_thinker_projection_reduces_relay_payload_bytes() -> None:
+    import asyncio
+
+    import torch
+
+    from sglang_omni.models.ming_omni.io import MingOmniPipelineState
+    from sglang_omni.models.ming_omni.pipeline.next_stage import THINKER_STAGE
+    from sglang_omni.models.ming_omni.stages import (
+        project_thinker_to_decode,
+        project_thinker_to_segmenter,
+        project_thinker_to_talker,
+    )
+    from sglang_omni.pipeline import relay_io
+    from sglang_omni.proto import OmniRequest, StagePayload
+    from tests.unit_test.fixtures.pipeline_fakes import FakeRelay
+
+    thinker_out = {
+        "output_ids": list(range(8192)),
+        "step": 8192,
+        "is_final": True,
+        "finish_reason": "stop",
+        "extra_model_outputs": {"hidden_states": torch.ones(128)},
+    }
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs={}),
+        data=MingOmniPipelineState(
+            prompt={"input_ids": list(range(256)), "prompt_text": "ignored"},
+            thinker_inputs={"inputs_embeds": torch.ones(64, 8)},
+            thinker_out=thinker_out,
+            engine_outputs={THINKER_STAGE: thinker_out},
+            stream_state={"emitted_ids": list(range(64))},
+        ).to_dict(),
+    )
+    projected = {
+        "decode": project_thinker_to_decode(payload),
+        "talker": project_thinker_to_talker(payload),
+        "segmenter": project_thinker_to_segmenter(payload),
+    }
+
+    async def serialized_sizes(candidate: StagePayload) -> tuple[int, int]:
+        metadata, op = await relay_io.write_payload(
+            FakeRelay(), candidate.request_id, candidate
+        )
+        await op.wait_for_completion()
+        relay_payload_bytes = metadata["relay_info"]["transfer_info"]["size"]
+        payload_pickle_b64_bytes = len(metadata["payload_pickle"])
+        return relay_payload_bytes, payload_pickle_b64_bytes
+
+    async def compare_sizes() -> tuple[tuple[int, int], dict[str, tuple[int, int]]]:
+        original_sizes = await serialized_sizes(payload)
+        projected_sizes = {
+            stage: await serialized_sizes(candidate)
+            for stage, candidate in projected.items()
+        }
+        return original_sizes, projected_sizes
+
+    original_sizes, projected_sizes = asyncio.run(compare_sizes())
+
+    for stage, sizes in projected_sizes.items():
+        assert sizes[0] < original_sizes[0], stage
+        assert sizes[1] < original_sizes[1], stage
+    assert {stage: sizes[0] for stage, sizes in projected_sizes.items()} == {
+        "decode": 1,
+        "talker": 1,
+        "segmenter": 1,
+    }
+    assert "engine_outputs" not in projected["decode"].data
+    assert "engine_outputs" not in projected["talker"].data
+
+
 def test_ming_speech_launcher_exposes_tp_size_arg(monkeypatch) -> None:
     from examples.run_ming_omni_speech_server import parse_args
 
