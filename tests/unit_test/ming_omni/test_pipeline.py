@@ -9,6 +9,11 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+from examples.launchers.ming_omni import (
+    launch_ming_speech_server as _launch_speech_server,
+)
+from examples.launchers.ming_omni import launch_ming_text_server as _launch_text_server
+
 
 def test_ming_text_config_imports_and_uses_current_stage_schema() -> None:
     from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
@@ -118,6 +123,8 @@ def test_ming_thinker_projection_reduces_relay_payload_bytes() -> None:
 
     import torch
 
+    from sglang_omni.comm import stage_io
+    from sglang_omni.comm.data_ref import TransportKind
     from sglang_omni.models.ming_omni.io import MingOmniPipelineState
     from sglang_omni.models.ming_omni.pipeline.next_stage import THINKER_STAGE
     from sglang_omni.models.ming_omni.stages import (
@@ -125,7 +132,6 @@ def test_ming_thinker_projection_reduces_relay_payload_bytes() -> None:
         project_thinker_to_segmenter,
         project_thinker_to_talker,
     )
-    from sglang_omni.pipeline import relay_io
     from sglang_omni.proto import OmniRequest, StagePayload
     from tests.unit_test.fixtures.pipeline_fakes import FakeRelay
 
@@ -154,12 +160,15 @@ def test_ming_thinker_projection_reduces_relay_payload_bytes() -> None:
     }
 
     async def serialized_sizes(candidate: StagePayload) -> tuple[int, int]:
-        metadata, op = await relay_io.write_payload(
-            FakeRelay(), candidate.request_id, candidate
+        data_ref, op = await stage_io.write_payload(
+            FakeRelay(),
+            candidate.request_id,
+            candidate,
+            transport=TransportKind.SHM,
         )
         await op.wait_for_completion()
-        relay_payload_bytes = metadata["relay_info"]["transfer_info"]["size"]
-        payload_pickle_b64_bytes = len(metadata["payload_pickle"])
+        relay_payload_bytes = data_ref.buffer.length
+        payload_pickle_b64_bytes = len(data_ref.header or "")
         return relay_payload_bytes, payload_pickle_b64_bytes
 
     async def compare_sizes() -> tuple[tuple[int, int], dict[str, tuple[int, int]]]:
@@ -203,8 +212,6 @@ def test_ming_speech_launcher_exposes_tp_size_arg(monkeypatch) -> None:
 
 
 def test_ming_speech_launcher_places_thinker_tp_and_talker(monkeypatch) -> None:
-    from examples.run_ming_omni_speech_server import _launch_speech_server
-
     captured: dict[str, object] = {}
     serve_module = ModuleType("sglang_omni.serve")
 
@@ -217,7 +224,6 @@ def test_ming_speech_launcher_places_thinker_tp_and_talker(monkeypatch) -> None:
 
     args = SimpleNamespace(
         model_path="dummy",
-        relay_backend="shm",
         tp_size=4,
         gpu_thinker=0,
         gpu_talker=4,
@@ -330,8 +336,6 @@ def test_ming_audio_encoder_moves_inputs_to_component_device() -> None:
 
 
 def test_ming_text_launcher_places_tp_ranks_on_distinct_gpus(monkeypatch) -> None:
-    from examples.run_ming_omni_server import _launch_text_server
-
     captured: dict[str, object] = {}
     serve_module = ModuleType("sglang_omni.serve")
 
@@ -344,7 +348,6 @@ def test_ming_text_launcher_places_tp_ranks_on_distinct_gpus(monkeypatch) -> Non
 
     args = SimpleNamespace(
         model_path="dummy",
-        relay_backend="shm",
         tp_size=3,
         quantization=None,
         cpu_offload_gb=0,
@@ -367,9 +370,41 @@ def test_ming_text_launcher_places_tp_ranks_on_distinct_gpus(monkeypatch) -> Non
     assert thinker.gpu == [0, 1, 2]
 
 
-def test_ming_text_launcher_allows_encoder_gpu_overrides(monkeypatch) -> None:
-    from examples.run_ming_omni_server import _launch_text_server
+def test_ming_text_launcher_rejects_nonpositive_tp_before_config(monkeypatch) -> None:
+    import pytest
 
+    from sglang_omni.models.ming_omni import config as config_module
+
+    def fail_config_build(*args, **kwargs):
+        raise AssertionError("config must not be built")
+
+    monkeypatch.setattr(config_module, "MingOmniPipelineConfig", fail_config_build)
+    serve_module = ModuleType("sglang_omni.serve")
+    serve_module.launch_server = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "sglang_omni.serve", serve_module)
+
+    for tp_size in (0, -1):
+        args = SimpleNamespace(
+            model_path="dummy",
+            tp_size=tp_size,
+            quantization=None,
+            cpu_offload_gb=0,
+            gpu_audio_encoder=None,
+            gpu_image_encoder=None,
+            image_encoder_tp=1,
+            thinker_only=False,
+            mem_fraction_static=None,
+            thinker_max_seq_len=8192,
+            host="127.0.0.1",
+            port=8000,
+            model_name="ming-omni",
+        )
+
+        with pytest.raises(ValueError, match="--tp-size must be >= 1"):
+            _launch_text_server(args)
+
+
+def test_ming_text_launcher_allows_encoder_gpu_overrides(monkeypatch) -> None:
     captured: dict[str, object] = {}
     serve_module = ModuleType("sglang_omni.serve")
 
@@ -382,7 +417,6 @@ def test_ming_text_launcher_allows_encoder_gpu_overrides(monkeypatch) -> None:
 
     args = SimpleNamespace(
         model_path="dummy",
-        relay_backend="shm",
         tp_size=4,
         quantization=None,
         cpu_offload_gb=0,
@@ -409,8 +443,6 @@ def test_ming_text_launcher_allows_encoder_gpu_overrides(monkeypatch) -> None:
 def test_ming_text_launcher_can_build_thinker_only_smoke_pipeline(
     monkeypatch,
 ) -> None:
-    from examples.run_ming_omni_server import _launch_text_server
-
     captured: dict[str, object] = {}
     serve_module = ModuleType("sglang_omni.serve")
 
@@ -423,7 +455,6 @@ def test_ming_text_launcher_can_build_thinker_only_smoke_pipeline(
 
     args = SimpleNamespace(
         model_path="dummy",
-        relay_backend="shm",
         tp_size=4,
         quantization=None,
         cpu_offload_gb=0,
@@ -451,8 +482,6 @@ def test_ming_text_launcher_can_build_thinker_only_smoke_pipeline(
 
 
 def test_ming_text_launcher_configures_image_encoder_tp(monkeypatch) -> None:
-    from examples.run_ming_omni_server import _launch_text_server
-
     captured: dict[str, object] = {}
     serve_module = ModuleType("sglang_omni.serve")
 
@@ -465,7 +494,6 @@ def test_ming_text_launcher_configures_image_encoder_tp(monkeypatch) -> None:
 
     args = SimpleNamespace(
         model_path="dummy",
-        relay_backend="shm",
         tp_size=1,
         quantization=None,
         cpu_offload_gb=0,
@@ -491,15 +519,12 @@ def test_ming_text_launcher_configures_image_encoder_tp(monkeypatch) -> None:
 def test_ming_text_launcher_rejects_image_encoder_tp_zero(monkeypatch) -> None:
     import pytest
 
-    from examples.run_ming_omni_server import _launch_text_server
-
     serve_module = ModuleType("sglang_omni.serve")
     serve_module.launch_server = lambda *a, **kw: None
     monkeypatch.setitem(sys.modules, "sglang_omni.serve", serve_module)
 
     args = SimpleNamespace(
         model_path="dummy",
-        relay_backend="shm",
         tp_size=1,
         quantization=None,
         cpu_offload_gb=0,
@@ -523,15 +548,12 @@ def test_ming_text_launcher_rejects_thinker_only_with_image_encoder_tp(
 ) -> None:
     import pytest
 
-    from examples.run_ming_omni_server import _launch_text_server
-
     serve_module = ModuleType("sglang_omni.serve")
     serve_module.launch_server = lambda *a, **kw: None
     monkeypatch.setitem(sys.modules, "sglang_omni.serve", serve_module)
 
     args = SimpleNamespace(
         model_path="dummy",
-        relay_backend="shm",
         tp_size=1,
         quantization=None,
         cpu_offload_gb=0,
@@ -555,15 +577,12 @@ def test_ming_text_launcher_requires_gpu_ids_for_image_encoder_tp(
 ) -> None:
     import pytest
 
-    from examples.run_ming_omni_server import _launch_text_server
-
     serve_module = ModuleType("sglang_omni.serve")
     serve_module.launch_server = lambda *a, **kw: None
     monkeypatch.setitem(sys.modules, "sglang_omni.serve", serve_module)
 
     args = SimpleNamespace(
         model_path="dummy",
-        relay_backend="shm",
         tp_size=1,
         quantization=None,
         cpu_offload_gb=0,
@@ -585,15 +604,12 @@ def test_ming_text_launcher_requires_gpu_ids_for_image_encoder_tp(
 def test_ming_text_launcher_rejects_mismatched_gpu_count(monkeypatch) -> None:
     import pytest
 
-    from examples.run_ming_omni_server import _launch_text_server
-
     serve_module = ModuleType("sglang_omni.serve")
     serve_module.launch_server = lambda *a, **kw: None
     monkeypatch.setitem(sys.modules, "sglang_omni.serve", serve_module)
 
     args = SimpleNamespace(
         model_path="dummy",
-        relay_backend="shm",
         tp_size=1,
         quantization=None,
         cpu_offload_gb=0,
@@ -615,15 +631,12 @@ def test_ming_text_launcher_rejects_mismatched_gpu_count(monkeypatch) -> None:
 def test_ming_text_launcher_rejects_duplicate_gpu_ids(monkeypatch) -> None:
     import pytest
 
-    from examples.run_ming_omni_server import _launch_text_server
-
     serve_module = ModuleType("sglang_omni.serve")
     serve_module.launch_server = lambda *a, **kw: None
     monkeypatch.setitem(sys.modules, "sglang_omni.serve", serve_module)
 
     args = SimpleNamespace(
         model_path="dummy",
-        relay_backend="shm",
         tp_size=1,
         quantization=None,
         cpu_offload_gb=0,

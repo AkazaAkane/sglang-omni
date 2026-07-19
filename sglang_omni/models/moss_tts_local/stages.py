@@ -580,8 +580,7 @@ def create_sglang_tts_engine_executor(
     )
 
 
-def create_tts_engine_executor(*args, **kwargs) -> Any:
-    return create_sglang_tts_engine_executor(*args, **kwargs)
+create_tts_engine_executor = create_sglang_tts_engine_executor
 
 
 def create_vocoder_executor(
