@@ -8,6 +8,7 @@ from sglang_omni.config import (
     StageConfig,
     StageResourceConfig,
     StageRuntimeConfig,
+    apply_stage_process_overrides,
     build_process_topology_plan,
     build_stage_placement_plan,
 )
@@ -59,6 +60,176 @@ def test_stage_process_parses_from_schema_and_dotted_overrides() -> None:
     )
 
     assert [stage.process for stage in merged.stages] == ["p0", "p1"]
+
+
+def test_process_override_none_preserves_declared_topology() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("a", process="pipeline", next_stage="b"),
+            _stage("b", process="pipeline", terminal=True),
+        ],
+    )
+
+    overridden = apply_stage_process_overrides(config, isolate_stages=None)
+
+    assert overridden is config
+    assert [stage.process for stage in overridden.stages] == [
+        "pipeline",
+        "pipeline",
+    ]
+
+
+def test_process_override_isolates_named_stage_without_mutating_source() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("a", process="pipeline", next_stage="b"),
+            _stage("b", process="pipeline", terminal=True),
+        ],
+    )
+
+    overridden = apply_stage_process_overrides(config, isolate_stages=["b"])
+
+    assert overridden is not config
+    assert [stage.process for stage in config.stages] == ["pipeline", "pipeline"]
+    assert [stage.process for stage in overridden.stages] == ["pipeline", "b"]
+
+
+def test_process_override_isolates_multiple_stages_separately() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("a", process="pipeline", next_stage="b"),
+            _stage("b", process="pipeline", next_stage="c"),
+            _stage("c", process="pipeline", terminal=True),
+        ],
+    )
+
+    overridden = apply_stage_process_overrides(
+        config,
+        isolate_stages=["b", "c"],
+    )
+
+    assert [stage.process for stage in overridden.stages] == ["pipeline", "b", "c"]
+
+
+def test_process_override_rejects_unknown_stage() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[_stage("a", process="pipeline", terminal=True)],
+    )
+
+    with pytest.raises(ValueError, match="Unknown stage: missing"):
+        apply_stage_process_overrides(config, isolate_stages=["missing"])
+
+
+def test_process_override_rejects_tp_stage() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage(
+                "thinker",
+                gpu=[0, 1],
+                tp_size=2,
+                terminal=True,
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="already uses one process per TP rank"):
+        apply_stage_process_overrides(config, isolate_stages=["thinker"])
+
+
+def test_process_override_same_gpu_requires_memory_fractions() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("a", gpu=0, process="pipeline", next_stage="b"),
+            _stage("b", gpu=0, process="pipeline", terminal=True),
+        ],
+    )
+    overridden = apply_stage_process_overrides(config, isolate_stages=["b"])
+    gpu_placement = build_stage_placement_plan(overridden)
+
+    with pytest.raises(ValueError, match="total_gpu_memory_fraction"):
+        build_process_topology_plan(overridden, gpu_placement)
+
+
+def test_process_override_same_gpu_accepts_valid_memory_fractions() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage(
+                "a",
+                gpu=0,
+                fraction=0.40,
+                process="pipeline",
+                next_stage="b",
+            ),
+            _stage(
+                "b",
+                gpu=0,
+                fraction=0.40,
+                process="pipeline",
+                terminal=True,
+            ),
+        ],
+    )
+    overridden = apply_stage_process_overrides(config, isolate_stages=["b"])
+
+    topology = _topology(overridden)
+
+    assert [(group.name, group.stage_names) for group in topology.groups] == [
+        ("pipeline", ("a",)),
+        ("b", ("b",)),
+    ]
+
+
+def test_serve_cli_accepts_repeatable_isolate_stage(monkeypatch) -> None:
+    import importlib
+
+    from typer.testing import CliRunner
+
+    from sglang_omni.cli import app
+
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("a", process="pipeline", next_stage="b"),
+            _stage("b", process="pipeline", next_stage="c"),
+            _stage("c", process="pipeline", terminal=True),
+        ],
+    )
+    launched: list[PipelineConfig] = []
+    serve_module = importlib.import_module("sglang_omni.cli.serve")
+    monkeypatch.setattr(
+        ConfigManager,
+        "from_file",
+        staticmethod(lambda _path: ConfigManager(config)),
+    )
+    monkeypatch.setattr(
+        serve_module,
+        "launch_server",
+        lambda pipeline_config, **_kwargs: launched.append(pipeline_config),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "serve",
+            "--config",
+            "ignored.yaml",
+            "--isolate-stage",
+            "b",
+            "--isolate-stage",
+            "c",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(launched) == 1
+    assert [stage.process for stage in launched[0].stages] == ["pipeline", "b", "c"]
 
 
 def test_non_tp_stages_must_declare_process() -> None:
