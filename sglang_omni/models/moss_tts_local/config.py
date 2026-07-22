@@ -20,6 +20,7 @@ _PKG = "sglang_omni.models.moss_tts_local"
 # codec memory is included by process-scoped SGLang accounting
 # the reserve is for the later vocoder codec instance and runtime headroom
 _COLOCATED_TOTAL_GPU_MEMORY_FRACTION = 0.90
+_COLOCATED_CODEC_GPU_MEMORY_FRACTION = 0.05
 _COLOCATED_CODEC_MEM_RESERVE = 0.15
 _AR_MEM_FRACTION_STATIC = 0.85
 _REF_AUDIO_CACHE_MAX_ITEMS = 8192
@@ -47,6 +48,13 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
             process="pipeline",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
             factory_args={"device": codec_device},
+            runtime=StageRuntimeConfig(
+                resources=StageResourceConfig(
+                    total_gpu_memory_fraction=(
+                        _COLOCATED_CODEC_GPU_MEMORY_FRACTION if colocated else None
+                    )
+                )
+            ),
             gpu=0,
             next="tts_engine",
         ),
@@ -65,6 +73,13 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
             process="pipeline",
             factory=f"{_PKG}.stages.create_vocoder_executor",
             factory_args={"device": codec_device},
+            runtime=StageRuntimeConfig(
+                resources=StageResourceConfig(
+                    total_gpu_memory_fraction=(
+                        _COLOCATED_CODEC_GPU_MEMORY_FRACTION if colocated else None
+                    )
+                )
+            ),
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,
