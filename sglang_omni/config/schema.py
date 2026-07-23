@@ -256,6 +256,11 @@ class PipelineConfig(BaseModel):
         return [s.name for s in self.stages if s.terminal]
 
     @classmethod
+    def isolation_role_to_stage(cls) -> dict[str, str]:
+        """Map public isolation roles to model-specific stage names."""
+        return {}
+
+    @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         """Class-level public role map for SGLang mem_fraction_static overrides."""
         return {}

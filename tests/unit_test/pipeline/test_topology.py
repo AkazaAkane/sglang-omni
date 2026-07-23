@@ -17,6 +17,16 @@ from sglang_omni.config.manager import ConfigManager
 _FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
 
 
+class _IsolationAliasPipelineConfig(PipelineConfig):
+    @classmethod
+    def isolation_role_to_stage(cls) -> dict[str, str]:
+        return {
+            "vocoder": "audio_decode",
+            "tp_role": "thinker",
+            "missing_role": "missing",
+        }
+
+
 def _stage(
     name: str,
     *,
@@ -120,8 +130,50 @@ def test_process_override_rejects_unknown_stage() -> None:
         stages=[_stage("a", process="pipeline", terminal=True)],
     )
 
-    with pytest.raises(ValueError, match="Unknown stage: missing"):
+    with pytest.raises(ValueError, match="Unknown stage or isolation role: missing"):
         apply_stage_process_overrides(config, isolate_stages=["missing"])
+
+
+def test_process_override_literal_stage_takes_precedence_over_alias() -> None:
+    config = _IsolationAliasPipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("vocoder", process="pipeline", next_stage="audio_decode"),
+            _stage("audio_decode", process="pipeline", terminal=True),
+        ],
+    )
+
+    overridden = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+
+    assert [stage.process for stage in overridden.stages] == [
+        "vocoder",
+        "pipeline",
+    ]
+
+
+def test_process_override_alias_does_not_mutate_source_config() -> None:
+    config = _IsolationAliasPipelineConfig(
+        model_path="dummy",
+        stages=[_stage("audio_decode", process="pipeline", terminal=True)],
+    )
+
+    overridden = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+
+    assert config.stages[0].process == "pipeline"
+    assert overridden.stages[0].process == "audio_decode"
+
+
+def test_process_override_rejects_alias_with_missing_stage() -> None:
+    config = _IsolationAliasPipelineConfig(
+        model_path="dummy",
+        stages=[_stage("audio_decode", process="pipeline", terminal=True)],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Unknown stage or isolation role: missing_role",
+    ):
+        apply_stage_process_overrides(config, isolate_stages=["missing_role"])
 
 
 def test_process_override_rejects_tp_stage() -> None:
@@ -139,6 +191,26 @@ def test_process_override_rejects_tp_stage() -> None:
 
     with pytest.raises(ValueError, match="already uses one process per TP rank"):
         apply_stage_process_overrides(config, isolate_stages=["thinker"])
+
+
+def test_process_override_rejects_alias_to_tp_stage() -> None:
+    config = _IsolationAliasPipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage(
+                "thinker",
+                gpu=[0, 1],
+                tp_size=2,
+                terminal=True,
+            )
+        ],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Stage 'thinker' already uses one process per TP rank",
+    ):
+        apply_stage_process_overrides(config, isolate_stages=["tp_role"])
 
 
 def test_process_override_same_gpu_requires_memory_fractions() -> None:
@@ -183,6 +255,60 @@ def test_process_override_same_gpu_accepts_valid_memory_fractions() -> None:
     assert [(group.name, group.stage_names) for group in topology.groups] == [
         ("pipeline", ("a",)),
         ("b", ("b",)),
+    ]
+
+
+def test_qwen3_tts_vocoder_isolation_uses_default_memory_budgets() -> None:
+    from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+
+    config = Qwen3TTSPipelineConfig(model_path="dummy")
+    assert {
+        stage.name: stage.runtime.resources.total_gpu_memory_fraction
+        for stage in config.stages
+        if stage.gpu is not None
+    } == {
+        "tts_engine": 0.85,
+        "vocoder": 0.10,
+    }
+    overridden = apply_stage_process_overrides(
+        config,
+        isolate_stages=["vocoder"],
+    )
+
+    topology = _topology(overridden)
+
+    assert [(group.name, group.stage_names) for group in topology.groups] == [
+        ("pipeline", ("preprocessing", "tts_engine")),
+        ("vocoder", ("vocoder",)),
+    ]
+
+
+def test_ming_tts_vocoder_role_isolates_audio_decode_with_default_budgets() -> None:
+    from sglang_omni.models.ming_tts.config import MingTTSPipelineConfig
+
+    config = MingTTSPipelineConfig(model_path="dummy")
+    assert {
+        stage.name: stage.runtime.resources.total_gpu_memory_fraction
+        for stage in config.stages
+        if stage.gpu is not None
+    } == {
+        "reference_encode": 0.08,
+        "tts_engine": 0.72,
+        "audio_decode": 0.12,
+    }
+    overridden = apply_stage_process_overrides(
+        config,
+        isolate_stages=["vocoder"],
+    )
+
+    topology = _topology(overridden)
+
+    assert [(group.name, group.stage_names) for group in topology.groups] == [
+        (
+            "pipeline",
+            ("preprocessing", "reference_encode", "tts_engine"),
+        ),
+        ("audio_decode", ("audio_decode",)),
     ]
 
 

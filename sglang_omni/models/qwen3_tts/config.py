@@ -6,7 +6,12 @@ from __future__ import annotations
 import re
 from typing import ClassVar
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config import (
+    PipelineConfig,
+    StageConfig,
+    StageResourceConfig,
+    StageRuntimeConfig,
+)
 
 _PKG = "sglang_omni.models.qwen3_tts"
 _QWEN3_TTS_CUSTOM_VARIANT_MARKERS = (
@@ -41,6 +46,9 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory_args={"dtype": "bfloat16"},
             gpu=0,
+            runtime=StageRuntimeConfig(
+                resources=StageResourceConfig(total_gpu_memory_fraction=0.85)
+            ),
             next="vocoder",
         ),
         StageConfig(
@@ -49,6 +57,9 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_vocoder_executor",
             factory_args={"dtype": "bfloat16"},
             gpu=0,
+            runtime=StageRuntimeConfig(
+                resources=StageResourceConfig(total_gpu_memory_fraction=0.10)
+            ),
             terminal=True,
         ),
     ]

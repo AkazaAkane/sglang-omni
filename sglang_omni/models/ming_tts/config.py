@@ -5,7 +5,12 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config import (
+    PipelineConfig,
+    StageConfig,
+    StageResourceConfig,
+    StageRuntimeConfig,
+)
 
 _PKG = "sglang_omni.models.ming_tts"
 
@@ -38,6 +43,10 @@ class MingTTSPipelineConfig(PipelineConfig):
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"generation": TTS_ENGINE_STAGE}
 
+    @classmethod
+    def isolation_role_to_stage(cls) -> dict[str, str]:
+        return {"vocoder": AUDIO_DECODE_STAGE}
+
     model_path: str
     entry_stage: str = PREPROCESSING_STAGE
     stages: list[StageConfig] = [
@@ -53,6 +62,9 @@ class MingTTSPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_reference_encode_executor",
             factory_args={"dtype": "bfloat16"},
             gpu=0,
+            runtime=StageRuntimeConfig(
+                resources=StageResourceConfig(total_gpu_memory_fraction=0.08)
+            ),
             next=TTS_ENGINE_STAGE,
         ),
         StageConfig(
@@ -61,6 +73,9 @@ class MingTTSPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory_args={"dtype": "bfloat16"},
             gpu=0,
+            runtime=StageRuntimeConfig(
+                resources=StageResourceConfig(total_gpu_memory_fraction=0.72)
+            ),
             next=AUDIO_DECODE_STAGE,
         ),
         StageConfig(
@@ -72,6 +87,9 @@ class MingTTSPipelineConfig(PipelineConfig):
                 "decode_mode": "chunked",
             },
             gpu=0,
+            runtime=StageRuntimeConfig(
+                resources=StageResourceConfig(total_gpu_memory_fraction=0.12)
+            ),
             terminal=True,
         ),
     ]
