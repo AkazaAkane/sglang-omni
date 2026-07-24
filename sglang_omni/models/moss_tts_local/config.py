@@ -16,9 +16,9 @@ from sglang_omni.config import (
 )
 
 _PKG = "sglang_omni.models.moss_tts_local"
-# Note (Ratish): in the default single-process topology preprocessing loads before AR, so its
-# codec memory is included by process-scoped SGLang accounting
-# the reserve is for the later vocoder codec instance and runtime headroom
+# Note (Akazaakane): Preprocessing shares the AR process, so its codec memory is
+# included by process-scoped SGLang accounting. The reserve is for the isolated
+# vocoder codec instance and runtime headroom.
 _COLOCATED_TOTAL_GPU_MEMORY_FRACTION = 0.90
 _COLOCATED_CODEC_GPU_MEMORY_FRACTION = 0.05
 _COLOCATED_CODEC_MEM_RESERVE = 0.15
@@ -70,7 +70,13 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
         ),
         StageConfig(
             name="vocoder",
-            process="pipeline",
+            # Isolate the codec into its own process only in the single-GPU
+            # colocated topology, where per-stage GPU budgets exist to satisfy
+            # same-GPU process colocation. The split variant carries no per-stage
+            # budgets (it relies on SGLang mem_fraction_static), so keep its
+            # vocoder in the shared pipeline process to avoid an unbudgeted
+            # multi-process-group placement on one GPU.
+            process="vocoder" if colocated else "pipeline",
             factory=f"{_PKG}.stages.create_vocoder_executor",
             factory_args={"device": codec_device},
             runtime=StageRuntimeConfig(

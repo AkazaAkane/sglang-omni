@@ -5,7 +5,12 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config import (
+    PipelineConfig,
+    StageConfig,
+    StageResourceConfig,
+    StageRuntimeConfig,
+)
 from sglang_omni.models.voxtral_tts.pipeline.next_stage import (
     GENERATION_STAGE,
     PREPROCESSING_STAGE,
@@ -38,13 +43,19 @@ class VoxtralTTSPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_generation_executor",
             factory_args={"max_new_tokens": 4096},
             gpu=0,
+            runtime=StageRuntimeConfig(
+                resources=StageResourceConfig(total_gpu_memory_fraction=0.85)
+            ),
             next=VOCODER_STAGE,
         ),
         StageConfig(
             name=VOCODER_STAGE,
-            process="pipeline",
+            process=VOCODER_STAGE,
             factory=f"{_PKG}.stages.create_vocoder_executor",
             gpu=0,
+            runtime=StageRuntimeConfig(
+                resources=StageResourceConfig(total_gpu_memory_fraction=0.10)
+            ),
             terminal=True,
         ),
     ]

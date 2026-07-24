@@ -258,24 +258,20 @@ def test_process_override_same_gpu_accepts_valid_memory_fractions() -> None:
     ]
 
 
-def test_qwen3_tts_vocoder_isolation_uses_default_memory_budgets() -> None:
-    from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+def test_moss_tts_local_isolates_vocoder_by_default() -> None:
+    from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 
-    config = Qwen3TTSPipelineConfig(model_path="dummy")
+    config = MossTTSLocalPipelineConfig(model_path="dummy")
     assert {
         stage.name: stage.runtime.resources.total_gpu_memory_fraction
         for stage in config.stages
         if stage.gpu is not None
     } == {
-        "tts_engine": 0.85,
-        "vocoder": 0.10,
+        "preprocessing": 0.05,
+        "tts_engine": 0.90,
+        "vocoder": 0.05,
     }
-    overridden = apply_stage_process_overrides(
-        config,
-        isolate_stages=["vocoder"],
-    )
-
-    topology = _topology(overridden)
+    topology = _topology(config)
 
     assert [(group.name, group.stage_names) for group in topology.groups] == [
         ("pipeline", ("preprocessing", "tts_engine")),
@@ -283,7 +279,7 @@ def test_qwen3_tts_vocoder_isolation_uses_default_memory_budgets() -> None:
     ]
 
 
-def test_ming_tts_vocoder_role_isolates_audio_decode_with_default_budgets() -> None:
+def test_ming_tts_isolates_audio_decode_by_default() -> None:
     from sglang_omni.models.ming_tts.config import MingTTSPipelineConfig
 
     config = MingTTSPipelineConfig(model_path="dummy")
@@ -296,12 +292,7 @@ def test_ming_tts_vocoder_role_isolates_audio_decode_with_default_budgets() -> N
         "tts_engine": 0.72,
         "audio_decode": 0.12,
     }
-    overridden = apply_stage_process_overrides(
-        config,
-        isolate_stages=["vocoder"],
-    )
-
-    topology = _topology(overridden)
+    topology = _topology(config)
 
     assert [(group.name, group.stage_names) for group in topology.groups] == [
         (

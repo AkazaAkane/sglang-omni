@@ -409,7 +409,7 @@ def test_pipeline_stage_wiring():
     assert tts_engine_runtime.resources.total_gpu_memory_fraction == pytest.approx(0.90)
     assert tts_engine_runtime.sglang_server_args.mem_fraction_static is None
     assert stages["tts_engine"].factory_args["codec_mem_reserve"] == pytest.approx(0.15)
-    assert stages["vocoder"].process == "pipeline"
+    assert stages["vocoder"].process == "vocoder"
     assert stages["vocoder"].gpu == 0
     assert stages["vocoder"].factory_args["device"] == "cuda:0"
     assert stages[
@@ -445,6 +445,15 @@ def test_pipeline_stage_wiring():
     )
     assert split_stages["vocoder"].runtime.resources.total_gpu_memory_fraction is None
     assert split_stages["vocoder"].factory_args["device"] == "cuda:1"
+    # The split variant carries no per-stage GPU budgets, so its vocoder stays in
+    # the shared pipeline process; its declared topology must still validate.
+    assert split_stages["vocoder"].process == "pipeline"
+    split_topology = build_process_topology_plan(
+        split, build_stage_placement_plan(split)
+    )
+    assert [(group.name, group.stage_names) for group in split_topology.groups] == [
+        ("pipeline", ("preprocessing", "tts_engine", "vocoder"))
+    ]
 
 
 @pytest.mark.parametrize("stage_name", ["preprocessing", "vocoder"])
