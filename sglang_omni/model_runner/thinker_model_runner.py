@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -18,6 +19,13 @@ from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _ThinkerDecodeLaunch:
+    token_ids: torch.Tensor
+    aux_hidden_states: tuple[torch.Tensor, ...] | None
+    stream_hidden_states: torch.Tensor | None
 
 
 class ThinkerModelRunner(ModelRunner):
@@ -39,6 +47,8 @@ class ThinkerModelRunner(ModelRunner):
         self._embed_tokens = self._text_model.embed_tokens
         self._th_host_bufs = None
         self._th_slot = 0
+        self._th_capture_bufs: list[tuple[torch.Tensor, ...] | None] = [None, None]
+        self._th_capture_slot = 0
 
         thinker_cfg = tp_worker.model_runner.model_config.hf_config.thinker_config
         self._image_token_id = thinker_cfg.image_token_id
@@ -336,26 +346,18 @@ class ThinkerModelRunner(ModelRunner):
 
     def lookahead_eligible(self, batch: Any) -> bool:
         """Route to sync where the one-step lag would diverge from sync. A request
-        that emits audio captures hidden states for the talker; the per-forward
-        _captured_aux_hidden_states side channel would be overwritten by a lookahead
-        launch(N) before resolve(N-1) collects it, so those requests route to sync
-        per batch. Sampling that reads the lagged output history (repetition /
-        presence / frequency penalty, min_new_tokens), a fixed seed, or
-        return_logprob (the lookahead sampler skips the base logprob path) also
-        diverges; logit_bias / custom_params are routed conservatively.
+        Sampling that reads the lagged output history (repetition / presence /
+        frequency penalty, min_new_tokens), a fixed seed, or return_logprob (the
+        lookahead sampler skips the base logprob path) diverges; logit_bias /
+        custom_params are routed conservatively. Speech hidden states are copied
+        into per-launch double buffers and do not restrict eligibility.
         """
-        from sglang_omni.models.qwen3_omni.request_builders import (
-            should_generate_audio_output,
-        )
-
         for req in batch.reqs:
-            # note (jiaxin deng): fail closed if the request data is missing or None
-            # so a hidden-capture batch can never slip onto the async path.
             try:
                 data = req._omni_data
             except AttributeError:
                 data = None
-            if data is None or should_generate_audio_output(data.stage_payload):
+            if data is None:
                 return False
             try:
                 needs_logprob = data.return_logprob
@@ -389,6 +391,45 @@ class ThinkerModelRunner(ModelRunner):
         self._th_slot ^= 1
         return buf
 
+    def _async_hidden_capture(
+        self, result: Any
+    ) -> tuple[tuple[torch.Tensor, ...] | None, torch.Tensor | None]:
+        captured = self.model._captured_aux_hidden_states
+        self.model._captured_aux_hidden_states = None
+        if captured is None:
+            return None, None
+
+        logits_output = result.logits_output
+        stream_hidden = getattr(logits_output, "hidden_states", None)
+        sources = tuple(captured)
+        if isinstance(stream_hidden, torch.Tensor):
+            sources += (stream_hidden,)
+
+        # Note (Akazaakane): Graph replay can reuse capture storage before the
+        # lagged step resolves, so each in-flight step needs a distinct snapshot.
+        slot = self._th_capture_slot
+        buffers = self._th_capture_bufs[slot]
+        if (
+            buffers is None
+            or len(buffers) != len(sources)
+            or any(
+                buffer.shape != source.shape
+                or buffer.dtype != source.dtype
+                or buffer.device != source.device
+                for buffer, source in zip(buffers or (), sources)
+            )
+        ):
+            buffers = tuple(torch.empty_like(source) for source in sources)
+            self._th_capture_bufs[slot] = buffers
+        for buffer, source in zip(buffers, sources):
+            buffer.copy_(source, non_blocking=True)
+        self._th_capture_slot ^= 1
+
+        num_aux = len(captured)
+        aux_hidden = buffers[:num_aux]
+        captured_stream = buffers[num_aux] if len(buffers) > num_aux else None
+        return aux_hidden, captured_stream
+
     def _sample_lookahead(self, logits_output, forward_batch, requests):
         # note (jiaxin deng): penalties never reach here (lookahead_eligible routes
         # those batches to sync); only static suppress tokens are lag-safe.
@@ -408,13 +449,17 @@ class ThinkerModelRunner(ModelRunner):
         nt = result.next_token_ids
         host_buf = self._async_host_buf(nt, n)
         host_buf[:n].copy_(nt[:n], non_blocking=True)
-        return host_buf
+        aux_hidden, stream_hidden = self._async_hidden_capture(result)
+        return _ThinkerDecodeLaunch(host_buf, aux_hidden, stream_hidden)
 
     def post_decode_resolve(
-        self, launch_buf, result, forward_batch, schedule_batch, requests
+        self, launch_state, result, forward_batch, schedule_batch, requests
     ):
         del forward_batch, schedule_batch
-        if len(requests) == 0 or launch_buf is None:
+        if len(requests) == 0 or launch_state is None:
             return
         n = len(requests)
-        result.next_token_ids = launch_buf[:n].to(torch.long).clone()
+        result.next_token_ids = launch_state.token_ids[:n].to(torch.long).clone()
+        self.model._captured_aux_hidden_states = launch_state.aux_hidden_states
+        if launch_state.stream_hidden_states is not None:
+            result.logits_output.hidden_states = launch_state.stream_hidden_states
