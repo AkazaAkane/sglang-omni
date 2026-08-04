@@ -1,6 +1,28 @@
 FROM lmsysorg/sglang:dev AS base
 
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends strace \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/flashinfer_jit_cache /opt/flashinfer-jit-cache
+
+RUN set -eux; \
+    artifact=/root/.cache/flashinfer/0.6.14/90a/cached_ops/fused_moe_90/fused_moe_90.so; \
+    expected=ee5a6a87a13a271c0418e07ea76fd4cba5cbee1af2d7dab53890caacb9254e14; \
+    test -f "${artifact}"; \
+    echo "${expected}  ${artifact}" | sha256sum --check -; \
+    mkdir -p /opt/flashinfer-jit-cache/flashinfer_jit_cache/data/fused_moe_90 \
+        /opt/flashinfer-wheels; \
+    cp "${artifact}" \
+        /opt/flashinfer-jit-cache/flashinfer_jit_cache/data/fused_moe_90/fused_moe_90.so; \
+    python -m pip wheel --no-build-isolation --no-deps \
+        --wheel-dir /opt/flashinfer-wheels /opt/flashinfer-jit-cache; \
+    test -f \
+        /opt/flashinfer-wheels/flashinfer_jit_cache-0.6.14+cu130.omni1-py3-none-linux_x86_64.whl; \
+    rm -rf /opt/flashinfer-jit-cache
+
+
 # install UCX
 RUN git clone https://github.com/openucx/ucx.git \
     && cd ucx \
