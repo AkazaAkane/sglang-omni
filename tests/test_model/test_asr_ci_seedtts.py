@@ -34,6 +34,7 @@ from tests.test_model.omni_router_utils import (
     router_worker_traffic_guard,
 )
 from tests.utils import MetricCheckCollector
+from tests.utils.ci_resource_contract import collect_cpu_resource_contract
 
 _MODEL_NAME, _PRESET = select_asr_ci_preset()
 _THRESHOLDS = _PRESET.thresholds
@@ -173,6 +174,9 @@ def test_asr_matches_seedtts_reference_text_en(
                 "summary": summary,
                 "speed": speed,
                 "router_ready_s": asr_router_server.router_ready_s,
+                "resource_contract": collect_cpu_resource_contract()[
+                    "resource_contract"
+                ],
             },
             indent=2,
         )
@@ -292,6 +296,9 @@ def test_asr_matches_seedtts_reference_text_zh(
                 "model_path": _PRESET.model_path,
                 "summary": summary,
                 "speed": speed,
+                "resource_contract": collect_cpu_resource_contract()[
+                    "resource_contract"
+                ],
             },
             indent=2,
         )

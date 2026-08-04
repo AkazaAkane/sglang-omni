@@ -38,6 +38,8 @@ jobs:
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -e OMNI_CI_CPUSET_TOPOLOGY_VERSION
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -79,6 +81,8 @@ jobs:
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -e OMNI_CI_CPUSET_TOPOLOGY_VERSION
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -137,6 +141,8 @@ jobs:
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -e OMNI_CI_CPUSET_TOPOLOGY_VERSION
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -182,6 +188,8 @@ jobs:
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -e OMNI_CI_CPUSET_TOPOLOGY_VERSION
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -227,6 +235,8 @@ jobs:
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -e OMNI_CI_CPUSET_TOPOLOGY_VERSION
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -273,6 +283,8 @@ jobs:
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -e OMNI_CI_CPUSET_TOPOLOGY_VERSION
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -318,6 +330,8 @@ jobs:
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -e OMNI_CI_CPUSET_TOPOLOGY_VERSION
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -363,6 +377,8 @@ jobs:
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -e OMNI_CI_CPUSET_TOPOLOGY_VERSION
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -408,6 +424,8 @@ jobs:
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -e OMNI_CI_CPUSET_TOPOLOGY_VERSION
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -455,6 +473,8 @@ jobs:
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -e OMNI_CI_CPUSET_TOPOLOGY_VERSION
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci

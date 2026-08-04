@@ -236,6 +236,8 @@ jobs:
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -e OMNI_CI_CPUSET_TOPOLOGY_VERSION
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
         -v /data/cache/huggingface:/github/home/.cache/huggingface
@@ -413,6 +415,8 @@ jobs:
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -e OMNI_CI_CPUSET_TOPOLOGY_VERSION
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
         -v /data/cache/huggingface:/github/home/.cache/huggingface
