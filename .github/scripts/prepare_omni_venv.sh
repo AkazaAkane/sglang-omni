@@ -41,6 +41,7 @@ rm -rf "./${VENV_NAME}"
 ln -sfn "${HOST}" "./${VENV_NAME}"
 source "${VENV_NAME}/bin/activate"
 uv pip install -e .
+bash "${SCRIPT_DIR}/install_flashinfer_jit_cache.sh" "${VENV_NAME}"
 
 if ! python -c "import av" 2>/dev/null; then
   echo "PyAV native libraries corrupted in prepared venv, force-reinstalling..."
