@@ -32,8 +32,11 @@ runs:
         # sibling job from seeing a half-seeded cache.
         if [ ! -d "${OMNI_CI_HOME}/.cache/flashinfer" ] && [ -d /root/.cache/flashinfer ]; then
           mkdir -p "${OMNI_CI_HOME}/.cache"
-          seed="${OMNI_CI_HOME}/.cache/.flashinfer-seed-$$"
-          if cp -a /root/.cache/flashinfer "${seed}" \
+          # mktemp: $$ is not unique across job containers (separate PID
+          # namespaces share this mount), and a cancelled cp must never leave
+          # a staging dir a later job could republish.
+          seed="$(mktemp -d "${OMNI_CI_HOME}/.cache/.flashinfer-seed.XXXXXXXX")"
+          if cp -a /root/.cache/flashinfer/. "${seed}/" \
               && mv -T "${seed}" "${OMNI_CI_HOME}/.cache/flashinfer" 2>/dev/null; then
             echo "Seeded FlashInfer JIT cache into ${OMNI_CI_HOME}/.cache/flashinfer"
           fi
