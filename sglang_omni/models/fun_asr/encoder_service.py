@@ -11,6 +11,7 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Iterator
 from typing import Any, cast
 
 import torch
@@ -136,7 +137,13 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeError("Fun-ASR pre-LM encoder service is closed")
-            self._queue.put((item, future, time.perf_counter()))
+            self._queue.put(
+                QueueEntry(
+                    item=item,
+                    future=future,
+                    enqueued_at=time.perf_counter(),
+                )
+            )
 
     def encode_item(self, item: Any) -> None:
         """Block until ``item.precomputed_embeddings`` holds the LM embedding.
@@ -267,13 +274,11 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
 
     def _drain_batch(
         self,
-    ) -> tuple[list[tuple[Any, concurrent.futures.Future[torch.Tensor], float]], bool]:
+    ) -> tuple[list[QueueEntry[Any]], bool]:
         first = self._queue.get()
         if first is _SHUTDOWN:
             return [], True
-        batch = [
-            cast(tuple[Any, concurrent.futures.Future[torch.Tensor], float], first)
-        ]
+        batch = [cast(QueueEntry[Any], first)]
         deadline = time.monotonic() + self._max_batch_wait_s
         shutdown = False
         while len(batch) < self._max_batch_size:
@@ -289,23 +294,20 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             if queued is _SHUTDOWN:
                 shutdown = True
                 break
-            batch.append(
-                cast(
-                    tuple[Any, concurrent.futures.Future[torch.Tensor], float],
-                    queued,
-                )
-            )
+            batch.append(cast(QueueEntry[Any], queued))
         return batch, shutdown
 
-    def _next_batch(self) -> tuple[list[QueueEntry], bool]:
+    def _next_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
         return self._drain_batch()
 
-    def _batch_context(self) -> contextlib.AbstractContextManager[Any]:
-        stack = contextlib.ExitStack()
-        stack.enter_context(torch.inference_mode())
-        if self._stream is not None:
-            stack.enter_context(torch.cuda.stream(self._stream))
-        return stack
+    @contextlib.contextmanager
+    def _batch_context(self) -> Iterator[None]:
+        with torch.inference_mode():
+            if self._stream is None:
+                yield
+            else:
+                with torch.cuda.stream(self._stream):
+                    yield
 
     def encode_batch(self, items: list[Any]) -> torch.Tensor:
         return self._model.get_audio_feature(items)
@@ -346,7 +348,7 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         if key is not None:
             self._cache.put(key, embedding)
 
-    def _retry_batch(self, batch: list[QueueEntry], _exc: Exception) -> bool:
+    def _retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
         if len(batch) == 1:
             return False
         logger.exception(
@@ -355,9 +357,13 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         )
         return True
 
-    def _on_batch_start(self, batch: list[QueueEntry]) -> None:
+    def _on_batch_start(self, batch: list[QueueEntry[Any]]) -> None:
         dequeue_time = time.perf_counter()
-        queue_waits = [dequeue_time - entry[2] for entry in batch]
+        queue_waits = [
+            dequeue_time - entry.enqueued_at
+            for entry in batch
+            if entry.enqueued_at is not None
+        ]
         with self._lock:
             self._queue_wait_count += len(queue_waits)
             self._queue_wait_total_s += sum(queue_waits)
@@ -368,7 +374,7 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
 
     def _on_batch_finished(
         self,
-        batch: list[QueueEntry],
+        batch: list[QueueEntry[Any]],
         batch_exc: Exception | None,
         retry_recovered: int | None,
         elapsed_s: float,
