@@ -7,8 +7,11 @@ import argparse
 import json
 import os
 from pathlib import Path
+from runpy import run_path
 
-from tests.utils.ci_resource_contract import collect_cpu_resource_contract
+collect_cpu_resource_contract = run_path(
+    str(Path(__file__).parents[2] / "tests/utils/ci_resource_contract.py")
+)["collect_cpu_resource_contract"]
 
 
 def main() -> int:
