@@ -19,7 +19,7 @@ RUN set -eux; \
     python -m pip wheel --no-build-isolation --no-deps \
         --wheel-dir /opt/flashinfer-wheels /opt/flashinfer-jit-cache; \
     test -f \
-        /opt/flashinfer-wheels/flashinfer_jit_cache-0.6.14+cu130.omni1-py3-none-any.whl; \
+        /opt/flashinfer-wheels/flashinfer_jit_cache-0.6.14+cu130.omni1-py3-none-linux_x86_64.whl; \
     rm -rf /opt/flashinfer-jit-cache
 
 

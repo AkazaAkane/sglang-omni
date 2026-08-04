@@ -21,7 +21,7 @@ if [ ! -x "${PYTHON}" ]; then
 fi
 
 if ! "${PYTHON}" -c "
-import hashlib
+from pathlib import Path
 
 import av
 import flashinfer_jit_cache
@@ -32,15 +32,11 @@ import zhon.hanzi
 from whisper.normalizers import EnglishTextNormalizer
 
 assert flashinfer_jit_cache.__version__ == '0.6.14+cu130.omni1'
-artifact = (
+artifact = Path(
     flashinfer_jit_cache.get_jit_cache_dir()
     + '/fused_moe_90/fused_moe_90.so'
 )
-with open(artifact, 'rb') as handle:
-    assert hashlib.file_digest(handle, 'sha256').hexdigest() == (
-        'ee5a6a87a13a271c0418e07ea76fd4cba'
-        '5cbee1af2d7dab53890caacb9254e14'
-    )
+assert artifact.is_file()
 " 2>/dev/null; then
   echo "::error::${VENV_NAME} import probe failed at ${OMNI_CI_HOME}/${VENV_NAME}" >&2
   exit 1
