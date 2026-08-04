@@ -9,6 +9,10 @@ inputs:
     description: Prepare or refresh the requested virtualenv before running tests.
     required: false
     default: "false"
+  flashinfer-telemetry:
+    description: Record FlashInfer cache and compiler activity for this job.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -30,6 +34,7 @@ runs:
         # the persistent CI home from the image's prewarmed cache once, then
         # keep the workspace there. The copy and rename keep a concurrent
         # sibling job from seeing a half-seeded cache.
+        cache_seeded_from_image=false
         if [ ! -d "${OMNI_CI_HOME}/.cache/flashinfer" ] && [ -d /root/.cache/flashinfer ]; then
           mkdir -p "${OMNI_CI_HOME}/.cache"
           # mktemp: $$ is not unique across job containers (separate PID
@@ -39,9 +44,11 @@ runs:
           if cp -a /root/.cache/flashinfer/. "${seed}/" \
               && mv -T "${seed}" "${OMNI_CI_HOME}/.cache/flashinfer" 2>/dev/null; then
             echo "Seeded FlashInfer JIT cache into ${OMNI_CI_HOME}/.cache/flashinfer"
+            cache_seeded_from_image=true
           fi
           rm -rf "${seed}"
         fi
+        echo "FLASHINFER_CACHE_SEEDED_FROM_IMAGE=${cache_seeded_from_image}" >> "${GITHUB_ENV}"
         echo "FLASHINFER_WORKSPACE_BASE=${OMNI_CI_HOME}" >> "${GITHUB_ENV}"
         echo "HF_HUB_DISABLE_XET=0" >> "${GITHUB_ENV}"
         echo "HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}" >> "${GITHUB_ENV}"
@@ -91,6 +98,16 @@ runs:
       env:
         VENV_NAME: ${{ inputs.venv-name }}
       run: bash .github/scripts/validate_omni_env_reusable.sh "${VENV_NAME}"
+
+    - name: Start FlashInfer cache telemetry
+      if: ${{ inputs.flashinfer-telemetry == 'true' }}
+      shell: bash
+      env:
+        VENV_NAME: ${{ inputs.venv-name }}
+      run: |
+        if ! "${VENV_NAME}/bin/python" .github/scripts/flashinfer_cache_telemetry.py start; then
+          echo "::warning::FlashInfer cache telemetry failed to start"
+        fi
 
     - name: Kill GPU processes
       shell: bash

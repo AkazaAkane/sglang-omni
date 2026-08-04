@@ -115,7 +115,35 @@ runs:
         if-no-files-found: ${{ inputs.artifact-if-no-files-found }}
         retention-days: 7
 
+    - name: Finalize FlashInfer cache telemetry
+      id: flashinfer_telemetry
+      if: ${{ always() }}
+      shell: bash
+      env:
+        JOB_STATUS: ${{ job.status }}
+        STAGE_LABEL: ${{ inputs.stage-label }}
+      run: |
+        if ! python .github/scripts/flashinfer_cache_telemetry.py finish \
+            --stage-label "${STAGE_LABEL}"; then
+          echo "::warning::FlashInfer cache telemetry failed to finish"
+        fi
+        job_slug="$(printf '%s' "${GITHUB_JOB}" | tr -cs '[:alnum:]_.-' '-')"
+        stage_hash="$(printf '%s' "${STAGE_LABEL}" | sha256sum | cut -c1-8)"
+        echo "artifact_name=flashinfer-cache-${job_slug}-${stage_hash}-attempt-${GITHUB_RUN_ATTEMPT}" \
+          >> "${GITHUB_OUTPUT}"
+
+    - name: Upload FlashInfer cache telemetry
+      if: ${{ always() && steps.flashinfer_telemetry.outputs.artifact_name != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.flashinfer_telemetry.outputs.artifact_name }}
+        path: ${{ runner.temp }}/flashinfer-cache-stats
+        if-no-files-found: warn
+        retention-days: 14
+        overwrite: true
+
     - name: Kill GPU processes
+      if: ${{ always() }}
       shell: bash
       run: |
         # note (Yue Yin): post-stage runs after the test in an isolated --rm

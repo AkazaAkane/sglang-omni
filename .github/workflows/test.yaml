@@ -38,6 +38,7 @@ jobs:
       - uses: ./.github/actions/omni-setup
         with:
           venv-name: omni
+          flashinfer-telemetry: "false"
 
       - name: Run test
         timeout-minutes: 30

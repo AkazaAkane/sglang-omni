@@ -261,6 +261,7 @@ jobs:
         with:
           venv-name: omni
           install-deps: "true"
+          flashinfer-telemetry: "false"
 
       - uses: ./.github/actions/omni-save-cache
         with:
