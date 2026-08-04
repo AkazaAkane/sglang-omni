@@ -128,8 +128,9 @@ runs:
           echo "::warning::FlashInfer cache telemetry failed to finish"
         fi
         job_slug="$(printf '%s' "${GITHUB_JOB}" | tr -cs '[:alnum:]_.-' '-')"
+        runner_slug="$(printf '%s' "${RUNNER_NAME:-unknown-runner}" | tr -cs '[:alnum:]_.-' '-')"
         stage_hash="$(printf '%s' "${STAGE_LABEL}" | sha256sum | cut -c1-8)"
-        echo "artifact_name=flashinfer-cache-${job_slug}-${stage_hash}-attempt-${GITHUB_RUN_ATTEMPT}" \
+        echo "artifact_name=flashinfer-cache-${job_slug}-${runner_slug}-${stage_hash}-attempt-${GITHUB_RUN_ATTEMPT}" \
           >> "${GITHUB_OUTPUT}"
 
     - name: Upload FlashInfer cache telemetry
@@ -139,8 +140,7 @@ runs:
         name: ${{ steps.flashinfer_telemetry.outputs.artifact_name }}
         path: ${{ runner.temp }}/flashinfer-cache-stats
         if-no-files-found: warn
-        retention-days: 14
-        overwrite: true
+        retention-days: 30
 
     - name: Kill GPU processes
       if: ${{ always() }}
