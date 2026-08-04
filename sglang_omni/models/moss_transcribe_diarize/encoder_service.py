@@ -10,13 +10,8 @@ from __future__ import annotations
 import contextlib
 import logging
 import queue
-
-<<<<<<< HEAD
 import traceback
 from dataclasses import dataclass
-
-=======
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
 from typing import Any
 
 import torch
@@ -30,15 +25,12 @@ _CACHE_MAX_ENTRIES = 4096
 _CACHE_MAX_BYTES = 2 * 1024**3
 
 
-<<<<<<< HEAD
 @dataclass(frozen=True)
 class _DetachedFailure:
     exception: Exception
     formatted_traceback: str
 
 
-=======
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
 class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Tensor]):
     ENCODE_TIMEOUT_S = 300.0
 
@@ -110,12 +102,9 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         item.precomputed_embeddings = embedding
         item.feature = None
 
-<<<<<<< HEAD
     def attach_before_synchronize(self) -> bool:
         return False
 
-=======
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
     def synchronize_batch(self) -> None:
         self._stream.synchronize()
 
@@ -123,7 +112,6 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         if item.hash is not None:
             self._cache.put(str(item.hash), embedding)
 
-<<<<<<< HEAD
     def _handle_batch_failure(
         self,
         batch: list[QueueEntry[Any]],
@@ -160,14 +148,6 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
 
     def _retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
         return len(batch) > 1
-=======
-    def _retry_batch(self, _batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
-        logger.exception(
-            f"MOSS-TD batched audio encode failed for {len(_batch)} "
-            f"items; retrying per item"
-        )
-        return True
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
 
     def _future_result(self, _embedding: torch.Tensor) -> None:
         return None
@@ -176,7 +156,6 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         self,
         batch: list[QueueEntry[Any]],
         batch_exc: Exception | None,
-<<<<<<< HEAD
         retry_recovered: int | None,
         _elapsed_s: float,
     ) -> None:
@@ -223,23 +202,10 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
     def _record_success(self, item_count: int) -> None:
         self._batch_count += 1
         self._item_count += item_count
-=======
-        _retry_recovered: int | None,
-        _elapsed_s: float,
-    ) -> None:
-        if batch_exc is not None:
-            return
-        self._batch_count += 1
-        self._item_count += len(batch)
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
         if self._batch_count % 50 == 1:
             logger.info(
                 f"MOSS-TD pre-LM encoder stage: {self._batch_count} batches, "
                 f"{self._item_count} items (avg "
                 f"{self._item_count / self._batch_count:.2f} items/batch, "
-<<<<<<< HEAD
                 f"last batch: {item_count})"
-=======
-                f"last batch: {len(batch)})"
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
             )

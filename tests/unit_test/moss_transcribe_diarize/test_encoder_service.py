@@ -4,18 +4,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
-
-<<<<<<< HEAD
 import gc
 import queue
 import threading
 import weakref
-
-=======
-import queue
-import threading
-
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
 from types import SimpleNamespace
 
 import pytest
@@ -49,7 +41,6 @@ def test_encoder_microbatch_limit_must_be_positive() -> None:
         BatchedAudioEncoderService(object(), max_batch_size=0)
 
 
-<<<<<<< HEAD
 class _FailingStream:
     def synchronize(self) -> None:
         raise torch.OutOfMemoryError("test encoder OOM")
@@ -274,8 +265,6 @@ def test_non_oom_failure_logs_traceback_without_retaining_exception_state(
     )
 
 
-=======
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
 def test_cache_hit_attaches_embedding_without_submitting() -> None:
     service = object.__new__(BatchedAudioEncoderService)
     service._device = torch.device("cpu")

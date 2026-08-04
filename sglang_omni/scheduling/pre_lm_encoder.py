@@ -87,12 +87,9 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
     def attach_embedding(self, item: ItemT, embedding: EmbeddingT) -> None:
         raise NotImplementedError
 
-<<<<<<< HEAD
     def attach_before_synchronize(self) -> bool:
         return True
 
-=======
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
     def synchronize_batch(self) -> None:
         pass
 
@@ -100,10 +97,7 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
         pass
 
     def _execute_batch(self, items: list[ItemT]) -> list[EmbeddingT]:
-<<<<<<< HEAD
         attach_before_synchronize = self.attach_before_synchronize()
-=======
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
         with self._batch_context():
             encoded = self.encode_batch(items)
             embeddings = self.split_embeddings(items, encoded)
@@ -112,7 +106,6 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                     f"split_embeddings returned {len(embeddings)} embeddings "
                     f"for {len(items)} items"
                 )
-<<<<<<< HEAD
             if attach_before_synchronize:
                 for item, embedding in zip(items, embeddings):
                     self.attach_embedding(item, embedding)
@@ -120,16 +113,10 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
         if not attach_before_synchronize:
             for item, embedding in zip(items, embeddings):
                 self.attach_embedding(item, embedding)
-=======
-            for item, embedding in zip(items, embeddings):
-                self.attach_embedding(item, embedding)
-        self.synchronize_batch()
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
         for item, embedding in zip(items, embeddings):
             self.cache_embedding(item, embedding)
         return embeddings
 
-<<<<<<< HEAD
     def _handle_batch_failure(
         self,
         batch: list[QueueEntry[ItemT]],
@@ -149,9 +136,6 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
         batch: list[QueueEntry[ItemT]],
         exc: Exception,
     ) -> bool:
-=======
-    def _retry_batch(self, batch: list[QueueEntry[ItemT]], exc: Exception) -> bool:
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
         return False
 
     def _future_result(self, embedding: EmbeddingT) -> Any:
@@ -243,10 +227,7 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                 try:
                     embeddings = self._execute_batch(items)
                 except Exception as batch_exc:
-<<<<<<< HEAD
                     batch_exc = self._handle_batch_failure(batch, batch_exc)
-=======
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
                     if not self._retry_batch(batch, batch_exc):
                         for entry in batch:
                             self._set_exception(entry, batch_exc)
@@ -267,10 +248,7 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                             self._set_result(entry, embedding)
                             recovered += 1
                         except Exception as item_exc:
-<<<<<<< HEAD
                             item_exc = self._handle_item_failure(entry, item_exc)
-=======
->>>>>>> 0b0d2902f7085e37d5fb0954a0b5a521dd15dc3c
                             self._set_exception(entry, item_exc)
                     self._notify_batch_finished(
                         batch,
