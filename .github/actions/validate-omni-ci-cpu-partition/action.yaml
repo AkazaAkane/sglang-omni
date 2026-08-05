@@ -1,0 +1,12 @@
+name: Validate Omni CI CPU Partition
+description: Fail closed unless the runner-enforced CPU partition contract holds.
+
+runs:
+  using: composite
+  steps:
+    - name: Validate CPU partition contract
+      shell: bash
+      run: >-
+        PYTHONPATH="${GITHUB_WORKSPACE}"
+        python3 .github/scripts/validate_omni_ci_cpu_partition.py
+        --output /tmp/omni-ci-resource-contract.json

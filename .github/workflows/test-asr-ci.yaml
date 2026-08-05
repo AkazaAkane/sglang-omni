@@ -51,6 +51,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - uses: ./.github/actions/validate-omni-ci-cpu-partition
+
       - uses: ./.github/actions/omni-setup
         with:
           venv-name: omni
@@ -106,6 +108,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - uses: ./.github/actions/validate-omni-ci-cpu-partition
 
       - uses: ./.github/actions/omni-setup
         with:

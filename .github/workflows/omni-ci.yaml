@@ -246,6 +246,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - uses: ./.github/actions/validate-omni-ci-cpu-partition
+
       - name: Assess CI environment completeness
         id: env_state
         shell: bash
@@ -424,6 +426,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - uses: ./.github/actions/validate-omni-ci-cpu-partition
 
       - uses: ./.github/actions/omni-cleanup-host
         with:

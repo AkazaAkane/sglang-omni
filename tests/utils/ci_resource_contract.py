@@ -92,6 +92,16 @@ def collect_cpu_resource_contract(
             f"requested={format_cpu_list(requested)} "
             f"effective={format_cpu_list(effective)}"
         )
+    cgroup_cpuset = _read_cgroup_cpuset()
+    if requested is not None:
+        if cgroup_cpuset is None:
+            errors.append("effective cgroup cpuset is unavailable")
+        elif parse_cpu_list(cgroup_cpuset) != requested:
+            errors.append(
+                "effective cgroup cpuset does not match OMNI_CI_CPUSET: "
+                f"requested={format_cpu_list(requested)} "
+                f"cgroup={cgroup_cpuset}"
+            )
     if requested_spec and not topology_version:
         errors.append("OMNI_CI_CPUSET_TOPOLOGY_VERSION is required with OMNI_CI_CPUSET")
     if require_partition and not visible_devices:
@@ -104,7 +114,7 @@ def collect_cpu_resource_contract(
                 format_cpu_list(requested) if requested is not None else requested_spec
             ),
             "effective_cpuset": format_cpu_list(effective),
-            "cgroup_cpuset": _read_cgroup_cpuset(),
+            "cgroup_cpuset": cgroup_cpuset,
             "visible_devices": visible_devices or None,
             "topology_version": topology_version or None,
         },

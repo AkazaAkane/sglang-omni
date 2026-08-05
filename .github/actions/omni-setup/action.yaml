@@ -17,13 +17,6 @@ runs:
       shell: bash
       run: bash .github/scripts/validate_omni_ci_home.sh
 
-    - name: Validate CPU partition contract
-      shell: bash
-      run: >-
-        PYTHONPATH="${GITHUB_WORKSPACE}"
-        python3 .github/scripts/validate_omni_ci_cpu_partition.py
-        --output /tmp/omni-ci-resource-contract.json
-
     - name: Align CI cache home
       shell: bash
       run: |

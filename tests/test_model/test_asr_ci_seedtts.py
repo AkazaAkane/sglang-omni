@@ -166,6 +166,7 @@ def test_asr_matches_seedtts_reference_text_en(
         speed, _PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL
     )
 
+    resource_contract = collect_cpu_resource_contract(require_partition=True)
     results_path = tmp_path_factory.getbasetemp() / EN_RESULTS_BASENAME
     results_path.write_text(
         json.dumps(
@@ -174,13 +175,16 @@ def test_asr_matches_seedtts_reference_text_en(
                 "summary": summary,
                 "speed": speed,
                 "router_ready_s": asr_router_server.router_ready_s,
-                "resource_contract": collect_cpu_resource_contract()[
-                    "resource_contract"
-                ],
+                "resource_contract": resource_contract,
             },
             indent=2,
         )
     )
+    if not resource_contract["valid"]:
+        pytest.fail(
+            "Infrastructure-invalid SeedTTS EN observation: "
+            + "; ".join(resource_contract["errors"])
+        )
 
     total_samples = summary["total_samples"]
     evaluated = summary["evaluated"]
@@ -289,6 +293,7 @@ def test_asr_matches_seedtts_reference_text_zh(
         speed, _PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL
     )
 
+    resource_contract = collect_cpu_resource_contract(require_partition=True)
     results_path = tmp_path_factory.getbasetemp() / ZH_RESULTS_BASENAME
     results_path.write_text(
         json.dumps(
@@ -296,13 +301,16 @@ def test_asr_matches_seedtts_reference_text_zh(
                 "model_path": _PRESET.model_path,
                 "summary": summary,
                 "speed": speed,
-                "resource_contract": collect_cpu_resource_contract()[
-                    "resource_contract"
-                ],
+                "resource_contract": resource_contract,
             },
             indent=2,
         )
     )
+    if not resource_contract["valid"]:
+        pytest.fail(
+            "Infrastructure-invalid SeedTTS ZH observation: "
+            + "; ".join(resource_contract["errors"])
+        )
 
     total_samples = summary["total_samples"]
     evaluated = summary["evaluated"]
