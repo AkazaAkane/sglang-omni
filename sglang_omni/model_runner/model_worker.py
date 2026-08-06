@@ -27,8 +27,6 @@ class ModelWorkerConfig:
     weight_prefix: str | None = None
     nccl_port: int | None = None
     total_gpu_memory_fraction: float | None = None
-    # Registers SGLang's static prefill input_embeds slot by marking the
-    # model config multimodal in _init_model_config.
     enable_prefill_input_embeds: bool = False
 
 
@@ -112,11 +110,8 @@ class ModelWorker:
             self._apply_arch_override(self.model_config, self.model_arch_override)
 
         if self.enable_prefill_input_embeds:
-            # Deliberately flipped only on this worker-owned config, after
-            # ServerArgs already ran its multimodal gates against its own
-            # cached ModelConfig; re-running those gates on a multimodal
-            # config would disable breakable prefill graphs and chunked
-            # prefill.
+            # Flipped after ServerArgs ran its multimodal gates: seen there,
+            # the flag would disable breakable prefill and chunked prefill.
             self.model_config.is_multimodal = True
 
     @staticmethod
