@@ -292,6 +292,31 @@ def test_model_capabilities_reject_invalid_default_buckets(
         )
 
 
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [("blocked", "not supported yet"), ("unvalidated", None)],
+)
+def test_non_enableable_prefill_backend_allows_empty_default_buckets(
+    status: str,
+    reason: str | None,
+) -> None:
+    capabilities = _capabilities_with_prefill(
+        PrefillCudaGraphCapability(
+            integration="direct",
+            backends=(
+                PrefillCudaGraphBackendCapability(
+                    backend="full",
+                    status=status,
+                    reason=reason,
+                ),
+            ),
+        )
+    )
+
+    assert capabilities.prefill_cuda_graph is not None
+    assert capabilities.prefill_cuda_graph.backends[0].default_buckets == ()
+
+
 @pytest.mark.parametrize("architecture", EXPECTED_TTS_CAPABILITIES)
 def test_tts_model_package_exports_capabilities(architecture: str) -> None:
     module = _package_for_architecture(architecture)

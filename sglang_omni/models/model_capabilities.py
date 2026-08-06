@@ -159,7 +159,11 @@ def _validate_prefill_cuda_graph_capability(
             raise ValueError(
                 f"blocked Prefill CUDA Graph backend {backend.backend} requires a reason"
             )
-        _validate_default_buckets(backend.backend, backend.default_buckets)
+        _validate_default_buckets(
+            backend.backend,
+            backend.status,
+            backend.default_buckets,
+        )
 
     if (
         capability.preferred_backend is not None
@@ -171,12 +175,16 @@ def _validate_prefill_cuda_graph_capability(
         )
 
 
-def _validate_default_buckets(backend: str, buckets: tuple[int, ...]) -> None:
+def _validate_default_buckets(
+    backend: str,
+    status: PrefillCudaGraphStatus,
+    buckets: tuple[int, ...],
+) -> None:
     if not isinstance(buckets, tuple):
         raise ValueError(
             f"default buckets for Prefill CUDA Graph backend {backend} must be a tuple"
         )
-    if not buckets:
+    if not buckets and status not in ("blocked", "unvalidated"):
         raise ValueError(
             f"default buckets for Prefill CUDA Graph backend {backend} "
             "must not be empty"

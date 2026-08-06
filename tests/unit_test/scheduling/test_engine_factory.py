@@ -126,7 +126,13 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
                 decode=SimpleNamespace(
                     max_bs=kwargs["cuda_graph_max_bs"],
                     bs=kwargs["cuda_graph_bs"],
-                )
+                ),
+                prefill=SimpleNamespace(
+                    backend=kwargs["cuda_graph_backend_prefill"],
+                    max_bs=0,
+                    bs=[],
+                    tc_compiler="eager",
+                ),
             ),
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             enable_torch_compile=kwargs["enable_torch_compile"],
@@ -210,9 +216,14 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             events.append("adjust_overrides")
             assert overrides["mem_fraction_static"] == 0.7
 
-        def _log_prefill_cuda_graph_policy(self, policy: Any) -> None:
+        def _validate_and_log_prefill_cuda_graph_policy(
+            self,
+            policy: Any,
+            server_args: Any,
+        ) -> None:
             events.append("prefill_policy")
             assert policy.enabled is False
+            assert server_args.cuda_graph_config.prefill.backend == "disabled"
 
         def customize_server_args(self, server_args: Any) -> None:
             events.append("customize_server_args")
@@ -313,9 +324,9 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
         "pre_infra_setup",
         "generation_defaults",
         "adjust_overrides",
-        "prefill_policy",
         "build_server_args",
         "customize_server_args",
+        "prefill_policy",
         "infrastructure",
         "setup_model",
         "get_model_buffer_bs",
@@ -361,7 +372,16 @@ def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None
     def fake_server_args(*args: Any, **kwargs: Any) -> Any:
         del args, kwargs
         events.append("server_args")
-        return SimpleNamespace()
+        return SimpleNamespace(
+            cuda_graph_config=SimpleNamespace(
+                prefill=SimpleNamespace(
+                    backend="disabled",
+                    max_bs=0,
+                    bs=[],
+                    tc_compiler="eager",
+                )
+            )
+        )
 
     def fake_validate(**kwargs: Any) -> None:
         assert kwargs["model_name"] == "Test ASR"
@@ -597,13 +617,13 @@ def test_prefill_cuda_graph_defaults_disabled_without_capability_lookup(
 
     policy = builder._resolve_prefill_cuda_graph_policy(
         overrides=overrides,
-        server_args_overrides=None,
     )
 
     assert policy.enabled is False
     assert overrides == {
         "cuda_graph_bs": [1, 4],
         "cuda_graph_max_bs": 4,
+        "cuda_graph_backend_prefill": "disabled",
     }
 
 
@@ -613,11 +633,10 @@ def test_prefill_cuda_graph_explicit_disabled_override() -> None:
 
     policy = builder._resolve_prefill_cuda_graph_policy(
         overrides=overrides,
-        server_args_overrides={"cuda_graph_backend_prefill": "disabled"},
     )
 
     assert policy.enabled is False
-    assert overrides == {}
+    assert overrides == {"cuda_graph_backend_prefill": "disabled"}
 
 
 def test_prefill_cuda_graph_synthetic_validated_capability_resolves() -> None:
@@ -644,38 +663,72 @@ def test_prefill_cuda_graph_synthetic_validated_capability_resolves() -> None:
 
     policy = builder._resolve_prefill_cuda_graph_policy(
         overrides=overrides,
-        server_args_overrides={
-            "cuda_graph_backend_prefill": "breakable",
-            "cuda_graph_bs_prefill": [16, 32],
-        },
     )
 
     assert policy.enabled is True
     assert policy.buckets == (16, 32)
-    assert overrides == {}
+    assert overrides == {
+        "cuda_graph_backend_prefill": "breakable",
+        "cuda_graph_bs_prefill": [16, 32],
+        "cuda_graph_max_bs_prefill": 32,
+    }
 
 
-def test_prefill_cuda_graph_backend_conflict_is_rejected() -> None:
+def test_prefill_cuda_graph_post_adjust_backend_is_authoritative() -> None:
     builder = _make_prefill_policy_builder()
     builder.prefill_cuda_graph_backend = "breakable"
+    overrides = {"cuda_graph_backend_prefill": "disabled"}
 
-    with pytest.raises(ValueError, match="Conflicting.*backend"):
-        builder._resolve_prefill_cuda_graph_policy(
-            overrides={"cuda_graph_backend_prefill": "disabled"},
-            server_args_overrides={"cuda_graph_backend_prefill": "disabled"},
-        )
+    policy = builder._resolve_prefill_cuda_graph_policy(overrides=overrides)
+
+    assert policy.enabled is False
+    assert overrides == {"cuda_graph_backend_prefill": "disabled"}
 
 
-def test_prefill_cuda_graph_bucket_conflict_is_rejected() -> None:
+def test_adjust_overrides_can_disable_requested_prefill() -> None:
+    builder = _make_prefill_policy_builder()
+    overrides = {
+        "cuda_graph_backend_prefill": "breakable",
+        "cuda_graph_bs_prefill": [32],
+    }
+
+    def disable_prefill(adjusted: dict[str, Any]) -> None:
+        adjusted["cuda_graph_backend_prefill"] = "disabled"
+        adjusted.pop("cuda_graph_bs_prefill")
+
+    builder.adjust_overrides = disable_prefill
+    builder.adjust_overrides(overrides)
+    policy = builder._resolve_prefill_cuda_graph_policy(overrides=overrides)
+
+    assert policy.enabled is False
+    assert overrides == {"cuda_graph_backend_prefill": "disabled"}
+
+
+def test_prefill_cuda_graph_post_adjust_buckets_are_authoritative() -> None:
+    from sglang_omni.models.model_capabilities import (
+        PrefillCudaGraphBackendCapability,
+        PrefillCudaGraphCapability,
+    )
+
     builder = _make_prefill_policy_builder()
     builder.prefill_cuda_graph_backend = "breakable"
     builder.prefill_cuda_graph_buckets = (16, 32)
+    builder.prefill_cuda_graph_capability = lambda: PrefillCudaGraphCapability(
+        integration="direct",
+        backends=(
+            PrefillCudaGraphBackendCapability(
+                backend="breakable",
+                status="validated",
+                default_buckets=(16, 32),
+            ),
+        ),
+    )
+    overrides = {"cuda_graph_bs_prefill": [32, 64]}
 
-    with pytest.raises(ValueError, match="Conflicting.*bucket"):
-        builder._resolve_prefill_cuda_graph_policy(
-            overrides={"cuda_graph_bs_prefill": [32, 64]},
-            server_args_overrides={"cuda_graph_bs_prefill": [32, 64]},
-        )
+    policy = builder._resolve_prefill_cuda_graph_policy(overrides=overrides)
+
+    assert policy.buckets == (32, 64)
+    assert overrides["cuda_graph_bs_prefill"] == [32, 64]
 
 
 def test_prefill_cuda_graph_startup_diagnostic(caplog) -> None:
@@ -698,14 +751,178 @@ def test_prefill_cuda_graph_startup_diagnostic(caplog) -> None:
     )
     policy = builder._resolve_prefill_cuda_graph_policy(
         overrides={},
-        server_args_overrides=None,
+    )
+    server_args = SimpleNamespace(
+        cuda_graph_config=SimpleNamespace(
+            prefill=SimpleNamespace(
+                backend="breakable",
+                max_bs=128,
+                bs=[32, 64, 128],
+                tc_compiler="eager",
+            )
+        )
     )
 
     with caplog.at_level("INFO", logger="sglang_omni.scheduling.engine_factory"):
-        builder._log_prefill_cuda_graph_policy(policy)
+        builder._validate_and_log_prefill_cuda_graph_policy(policy, server_args)
 
     assert (
         "Prefill CUDA Graph policy: model=TestModel requested=breakable "
-        "resolved=breakable integration=direct status=validated "
-        "buckets=[32,64,128]" in caplog.text
+        "actual=breakable enabled=true integration=direct status=validated "
+        "buckets=[32, 64, 128] max_bs=128 compiler=eager changed=false "
+        "downgraded=false" in caplog.text
     )
+
+
+def test_canonical_prefill_config_cannot_bypass_capability_gate() -> None:
+    builder = _make_prefill_policy_builder()
+
+    with pytest.raises(ValueError, match="has not declared.*compatibility"):
+        builder._resolve_prefill_cuda_graph_policy(
+            overrides={
+                "cuda_graph_config": {
+                    "prefill": {
+                        "backend": "full",
+                        "bs": [64],
+                        "max_bs": 64,
+                    }
+                }
+            }
+        )
+
+
+def test_canonical_and_convenience_prefill_settings_are_rejected() -> None:
+    builder = _make_prefill_policy_builder()
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        builder._resolve_prefill_cuda_graph_policy(
+            overrides={
+                "cuda_graph_config": {"prefill": {"backend": "breakable", "bs": [32]}},
+                "cuda_graph_backend_prefill": "breakable",
+            }
+        )
+
+
+def test_canonical_tc_piecewise_config_is_normalized() -> None:
+    from sglang_omni.models.model_capabilities import (
+        PrefillCudaGraphBackendCapability,
+        PrefillCudaGraphCapability,
+    )
+
+    builder = _make_prefill_policy_builder()
+    builder.prefill_cuda_graph_capability = lambda: PrefillCudaGraphCapability(
+        integration="direct",
+        backends=(
+            PrefillCudaGraphBackendCapability(
+                backend="tc_piecewise",
+                status="validated",
+                default_buckets=(16, 32),
+            ),
+        ),
+    )
+    overrides = {
+        "cuda_graph_config": {
+            "decode": {"backend": "full", "bs": [1, 2], "max_bs": 2},
+            "prefill": {
+                "backend": "tc_piecewise",
+                "bs": [16, 32],
+                "max_bs": 32,
+                "tc_compiler": "inductor",
+            },
+        }
+    }
+
+    policy = builder._resolve_prefill_cuda_graph_policy(overrides=overrides)
+
+    assert policy.compiler == "inductor"
+    assert overrides == {
+        "cuda_graph_config": {
+            "decode": {"backend": "full", "bs": [1, 2], "max_bs": 2},
+            "prefill": {
+                "backend": "tc_piecewise",
+                "bs": [16, 32],
+                "max_bs": 32,
+                "tc_compiler": "inductor",
+            },
+        }
+    }
+
+
+def test_prefill_cuda_graph_upstream_downgrade_is_rejected(caplog) -> None:
+    from sglang_omni.models.model_capabilities import (
+        PrefillCudaGraphBackendCapability,
+        PrefillCudaGraphCapability,
+    )
+
+    builder = _make_prefill_policy_builder()
+    builder.prefill_cuda_graph_backend = "breakable"
+    builder.prefill_cuda_graph_capability = lambda: PrefillCudaGraphCapability(
+        integration="direct",
+        backends=(
+            PrefillCudaGraphBackendCapability(
+                backend="breakable",
+                status="validated",
+                default_buckets=(32,),
+            ),
+        ),
+    )
+    policy = builder._resolve_prefill_cuda_graph_policy(overrides={})
+    server_args = SimpleNamespace(
+        cuda_graph_config=SimpleNamespace(
+            prefill=SimpleNamespace(
+                backend="disabled",
+                max_bs=0,
+                bs=[],
+                tc_compiler="eager",
+            )
+        )
+    )
+
+    with caplog.at_level("INFO", logger="sglang_omni.scheduling.engine_factory"):
+        with pytest.raises(ValueError, match="changed by SGLang"):
+            builder._validate_and_log_prefill_cuda_graph_policy(policy, server_args)
+
+    assert "actual=disabled" in caplog.text
+    assert "changed=true downgraded=true" in caplog.text
+
+
+def test_real_server_args_preserves_validated_canonical_prefill_config() -> None:
+    from sglang_omni.models.model_capabilities import (
+        PrefillCudaGraphBackendCapability,
+        PrefillCudaGraphCapability,
+    )
+    from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
+
+    builder = _make_prefill_policy_builder()
+    builder.prefill_cuda_graph_capability = lambda: PrefillCudaGraphCapability(
+        integration="direct",
+        backends=(
+            PrefillCudaGraphBackendCapability(
+                backend="breakable",
+                status="validated",
+                default_buckets=(16, 32),
+            ),
+        ),
+    )
+    overrides = {
+        "cuda_graph_config": {
+            "prefill": {
+                "backend": "breakable",
+                "bs": [16, 32],
+                "max_bs": 32,
+            }
+        }
+    }
+    policy = builder._resolve_prefill_cuda_graph_policy(overrides=overrides)
+
+    server_args = build_sglang_server_args(
+        "dummy",
+        context_length=128,
+        **overrides,
+    )
+    actual = server_args.cuda_graph_config.prefill
+
+    assert actual.backend == "breakable"
+    assert actual.bs == [16, 32]
+    assert actual.max_bs == 32
+    builder._validate_and_log_prefill_cuda_graph_policy(policy, server_args)

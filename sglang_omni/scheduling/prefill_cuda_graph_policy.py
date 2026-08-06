@@ -23,6 +23,7 @@ class ResolvedPrefillCudaGraphPolicy:
     buckets: tuple[int, ...]
     requirements: tuple[str, ...]
     reason: str | None
+    compiler: str | None = None
 
 
 def resolve_prefill_cuda_graph_policy(
@@ -31,6 +32,7 @@ def resolve_prefill_cuda_graph_policy(
     capability: PrefillCudaGraphCapability | None,
     requested_backend: str,
     requested_buckets: list[int] | tuple[int, ...] | None,
+    requested_compiler: str | None = None,
     allow_experimental: bool = False,
     allow_performance_unproven: bool = False,
     runtime_requirements: dict[str, bool] | None = None,
@@ -45,6 +47,7 @@ def resolve_prefill_cuda_graph_policy(
             buckets=(),
             requirements=(),
             reason=None,
+            compiler=None,
         )
 
     if capability is None:
@@ -72,6 +75,11 @@ def resolve_prefill_cuda_graph_policy(
         raise ValueError(
             f"{model_name} has not declared Prefill CUDA Graph backend "
             f"{requested_backend!r}; declared backends: {declared}"
+        )
+    if capability.integration == "adapter":
+        raise ValueError(
+            f"{model_name} Prefill CUDA Graph integration requires a concrete "
+            "adapter implementation"
         )
 
     status = backend_capability.status
@@ -120,6 +128,8 @@ def resolve_prefill_cuda_graph_policy(
             "requires at least one bucket"
         )
 
+    compiler = _resolve_compiler(requested_backend, requested_compiler)
+
     return ResolvedPrefillCudaGraphPolicy(
         enabled=True,
         requested_backend=requested_backend,
@@ -129,6 +139,7 @@ def resolve_prefill_cuda_graph_policy(
         buckets=buckets,
         requirements=requirements,
         reason=backend_capability.reason,
+        compiler=compiler,
     )
 
 
@@ -138,11 +149,27 @@ def prefill_cuda_graph_server_args(
     if not policy.enabled:
         return {"cuda_graph_backend_prefill": "disabled"}
 
-    return {
+    server_args: dict[str, object] = {
         "cuda_graph_backend_prefill": policy.resolved_backend,
         "cuda_graph_bs_prefill": list(policy.buckets),
         "cuda_graph_max_bs_prefill": max(policy.buckets),
     }
+    if policy.compiler is not None:
+        server_args["cuda_graph_tc_compiler"] = policy.compiler
+    return server_args
+
+
+def _resolve_compiler(backend: str, requested_compiler: str | None) -> str | None:
+    if backend != "tc_piecewise":
+        if requested_compiler is not None:
+            raise ValueError(
+                "Prefill CUDA Graph compiler can only be set for tc_piecewise"
+            )
+        return None
+    compiler = requested_compiler or "eager"
+    if compiler not in ("eager", "inductor"):
+        raise ValueError("Prefill CUDA Graph compiler must be 'eager' or 'inductor'")
+    return compiler
 
 
 def _validate_buckets(

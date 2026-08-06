@@ -97,6 +97,22 @@ def test_undeclared_backend_lists_declared_backends() -> None:
         _resolve(capability)
 
 
+def test_adapter_integration_requires_concrete_implementation() -> None:
+    capability = PrefillCudaGraphCapability(
+        integration="adapter",
+        backends=(
+            PrefillCudaGraphBackendCapability(
+                backend="breakable",
+                status="validated",
+                default_buckets=(16,),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="concrete adapter implementation"):
+        _resolve(capability)
+
+
 def test_validated_backend_uses_default_buckets() -> None:
     policy = _resolve(_capability())
 
@@ -212,3 +228,69 @@ def test_server_args_mapping() -> None:
         "cuda_graph_bs_prefill": [32, 64, 128],
         "cuda_graph_max_bs_prefill": 128,
     }
+
+
+@pytest.mark.parametrize("compiler", [None, "eager", "inductor"])
+def test_tc_piecewise_compiler_is_resolved_and_mapped(
+    compiler: str | None,
+) -> None:
+    capability = PrefillCudaGraphCapability(
+        integration="direct",
+        backends=(
+            PrefillCudaGraphBackendCapability(
+                backend="tc_piecewise",
+                status="validated",
+                default_buckets=(16, 32),
+            ),
+        ),
+    )
+
+    policy = resolve_prefill_cuda_graph_policy(
+        model_name="TestModel",
+        capability=capability,
+        requested_backend="tc_piecewise",
+        requested_buckets=None,
+        requested_compiler=compiler,
+    )
+
+    expected_compiler = compiler or "eager"
+    assert policy.compiler == expected_compiler
+    assert prefill_cuda_graph_server_args(policy) == {
+        "cuda_graph_backend_prefill": "tc_piecewise",
+        "cuda_graph_bs_prefill": [16, 32],
+        "cuda_graph_max_bs_prefill": 32,
+        "cuda_graph_tc_compiler": expected_compiler,
+    }
+
+
+def test_compiler_requires_tc_piecewise_backend() -> None:
+    with pytest.raises(ValueError, match="only be set for tc_piecewise"):
+        resolve_prefill_cuda_graph_policy(
+            model_name="TestModel",
+            capability=_capability(),
+            requested_backend="breakable",
+            requested_buckets=None,
+            requested_compiler="inductor",
+        )
+
+
+def test_tc_piecewise_rejects_unknown_compiler() -> None:
+    capability = PrefillCudaGraphCapability(
+        integration="direct",
+        backends=(
+            PrefillCudaGraphBackendCapability(
+                backend="tc_piecewise",
+                status="validated",
+                default_buckets=(16,),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="must be 'eager' or 'inductor'"):
+        resolve_prefill_cuda_graph_policy(
+            model_name="TestModel",
+            capability=capability,
+            requested_backend="tc_piecewise",
+            requested_buckets=None,
+            requested_compiler="unknown",
+        )
