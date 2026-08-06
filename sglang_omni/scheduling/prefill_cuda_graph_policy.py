@@ -1,5 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared policy resolution for SGLang Prefill CUDA Graphs."""
+"""Shared policy resolution for SGLang Prefill CUDA Graphs.
+
+Invalid explicit startup configuration fails here. Runtime replay eligibility,
+including eager fallback beyond captured token buckets, remains owned by SGLang.
+Capability metadata never selects a backend automatically; models remain eager
+unless a builder or operator explicitly requests a backend.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +26,7 @@ class ResolvedPrefillCudaGraphPolicy:
     resolved_backend: PrefillCudaGraphBackend | None
     integration: PrefillCudaGraphIntegration | None
     status: PrefillCudaGraphStatus | None
-    buckets: tuple[int, ...]
+    token_buckets: tuple[int, ...]
     requirements: tuple[str, ...]
     reason: str | None
     compiler: str | None = None
@@ -31,7 +37,7 @@ def resolve_prefill_cuda_graph_policy(
     model_name: str,
     capability: PrefillCudaGraphCapability | None,
     requested_backend: str,
-    requested_buckets: list[int] | tuple[int, ...] | None,
+    requested_token_buckets: list[int] | tuple[int, ...] | None,
     requested_compiler: str | None = None,
     allow_experimental: bool = False,
     allow_performance_unproven: bool = False,
@@ -44,7 +50,7 @@ def resolve_prefill_cuda_graph_policy(
             resolved_backend=None,
             integration=None,
             status=None,
-            buckets=(),
+            token_buckets=(),
             requirements=(),
             reason=None,
             compiler=None,
@@ -117,15 +123,15 @@ def resolve_prefill_cuda_graph_policy(
             f"unmet runtime requirements: {', '.join(unmet_requirements)}"
         )
 
-    buckets = _validate_buckets(
-        requested_buckets
-        if requested_buckets is not None
-        else backend_capability.default_buckets
+    token_buckets = _validate_token_buckets(
+        requested_token_buckets
+        if requested_token_buckets is not None
+        else backend_capability.default_token_buckets
     )
-    if not buckets:
+    if not token_buckets:
         raise ValueError(
             f"{model_name} Prefill CUDA Graph backend {requested_backend!r} "
-            "requires at least one bucket"
+            "requires at least one token bucket"
         )
 
     compiler = _resolve_compiler(requested_backend, requested_compiler)
@@ -136,7 +142,7 @@ def resolve_prefill_cuda_graph_policy(
         resolved_backend=backend_capability.backend,
         integration=capability.integration,
         status=status,
-        buckets=buckets,
+        token_buckets=token_buckets,
         requirements=requirements,
         reason=backend_capability.reason,
         compiler=compiler,
@@ -151,8 +157,8 @@ def prefill_cuda_graph_server_args(
 
     server_args: dict[str, object] = {
         "cuda_graph_backend_prefill": policy.resolved_backend,
-        "cuda_graph_bs_prefill": list(policy.buckets),
-        "cuda_graph_max_bs_prefill": max(policy.buckets),
+        "cuda_graph_bs_prefill": list(policy.token_buckets),
+        "cuda_graph_max_bs_prefill": max(policy.token_buckets),
     }
     if policy.compiler is not None:
         server_args["cuda_graph_tc_compiler"] = policy.compiler
@@ -172,23 +178,24 @@ def _resolve_compiler(backend: str, requested_compiler: str | None) -> str | Non
     return compiler
 
 
-def _validate_buckets(
-    buckets: list[int] | tuple[int, ...],
+def _validate_token_buckets(
+    token_buckets: list[int] | tuple[int, ...],
 ) -> tuple[int, ...]:
-    if not isinstance(buckets, (list, tuple)):
-        raise ValueError("Prefill CUDA Graph buckets must be a list or tuple")
+    if not isinstance(token_buckets, (list, tuple)):
+        raise ValueError("Prefill CUDA Graph token buckets must be a list or tuple")
     if any(
-        not isinstance(bucket, int) or isinstance(bucket, bool) for bucket in buckets
+        not isinstance(bucket, int) or isinstance(bucket, bool)
+        for bucket in token_buckets
     ):
-        raise ValueError("Prefill CUDA Graph buckets must contain integers")
+        raise ValueError("Prefill CUDA Graph token buckets must contain integers")
 
-    normalized = tuple(buckets)
+    normalized = tuple(token_buckets)
     if any(bucket <= 0 for bucket in normalized):
-        raise ValueError("Prefill CUDA Graph buckets must be positive")
+        raise ValueError("Prefill CUDA Graph token buckets must be positive")
     if len(set(normalized)) != len(normalized):
-        raise ValueError("Prefill CUDA Graph buckets must be unique")
+        raise ValueError("Prefill CUDA Graph token buckets must be unique")
     if any(left >= right for left, right in zip(normalized, normalized[1:])):
-        raise ValueError("Prefill CUDA Graph buckets must be strictly increasing")
+        raise ValueError("Prefill CUDA Graph token buckets must be strictly increasing")
     return normalized
 
 

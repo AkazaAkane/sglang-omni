@@ -45,6 +45,12 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=True,
+        prefill_cuda_graph=PrefillCudaGraphCapability(
+            integration="incompatible",
+            incompatible_reason=(
+                "padded prefill changes Higgs model outputs; keep prefill eager"
+            ),
+        ),
     ),
     "MossTTSDelayModel": ModelCapabilities(
         supports_reference_audio=True,
@@ -145,11 +151,15 @@ def _capabilities_with_prefill(
     )
 
 
-def test_existing_declarations_do_not_require_prefill_cuda_graph() -> None:
+def test_only_higgs_declares_prefill_cuda_graph_policy() -> None:
     assert all(
         capabilities.prefill_cuda_graph is None
-        for capabilities in EXPECTED_TTS_CAPABILITIES.values()
+        for architecture, capabilities in EXPECTED_TTS_CAPABILITIES.items()
+        if architecture != "HiggsMultimodalQwen3ForConditionalGeneration"
     )
+    higgs = EXPECTED_TTS_CAPABILITIES["HiggsMultimodalQwen3ForConditionalGeneration"]
+    assert higgs.prefill_cuda_graph is not None
+    assert higgs.prefill_cuda_graph.integration == "incompatible"
 
 
 @pytest.mark.parametrize("integration", ["direct", "adapter"])
@@ -159,7 +169,7 @@ def test_model_capabilities_accept_prefill_cuda_graph_integration(
     backend = PrefillCudaGraphBackendCapability(
         backend="breakable",
         status="validated",
-        default_buckets=(32, 64),
+        default_token_buckets=(32, 64),
     )
 
     capabilities = _capabilities_with_prefill(
@@ -209,7 +219,7 @@ def test_model_capabilities_reject_duplicate_prefill_backends() -> None:
     backend = PrefillCudaGraphBackendCapability(
         backend="breakable",
         status="validated",
-        default_buckets=(32,),
+        default_token_buckets=(32,),
     )
 
     with pytest.raises(ValueError, match="duplicate.*backend"):
@@ -256,7 +266,7 @@ def test_model_capabilities_reject_incompatible_backend_declarations() -> None:
                     PrefillCudaGraphBackendCapability(
                         backend="full",
                         status="validated",
-                        default_buckets=(32,),
+                        default_token_buckets=(32,),
                     ),
                 ),
             )
@@ -273,7 +283,7 @@ def test_model_capabilities_reject_incompatible_backend_declarations() -> None:
         ((32, 64.0), "integers"),
     ],
 )
-def test_model_capabilities_reject_invalid_default_buckets(
+def test_model_capabilities_reject_invalid_default_token_buckets(
     buckets: tuple[int, ...],
     error: str,
 ) -> None:
@@ -285,7 +295,7 @@ def test_model_capabilities_reject_invalid_default_buckets(
                     PrefillCudaGraphBackendCapability(
                         backend="breakable",
                         status="validated",
-                        default_buckets=buckets,
+                        default_token_buckets=buckets,
                     ),
                 ),
             )
@@ -296,7 +306,7 @@ def test_model_capabilities_reject_invalid_default_buckets(
     ("status", "reason"),
     [("blocked", "not supported yet"), ("unvalidated", None)],
 )
-def test_non_enableable_prefill_backend_allows_empty_default_buckets(
+def test_non_enableable_prefill_backend_allows_empty_default_token_buckets(
     status: str,
     reason: str | None,
 ) -> None:
@@ -314,7 +324,7 @@ def test_non_enableable_prefill_backend_allows_empty_default_buckets(
     )
 
     assert capabilities.prefill_cuda_graph is not None
-    assert capabilities.prefill_cuda_graph.backends[0].default_buckets == ()
+    assert capabilities.prefill_cuda_graph.backends[0].default_token_buckets == ()
 
 
 @pytest.mark.parametrize("architecture", EXPECTED_TTS_CAPABILITIES)
@@ -326,7 +336,10 @@ def test_tts_model_package_exports_capabilities(architecture: str) -> None:
     assert isinstance(capabilities, ModelCapabilities)
     for field in fields(ModelCapabilities)[:-1]:
         assert isinstance(getattr(capabilities, field.name), bool)
-    assert capabilities.prefill_cuda_graph is None
+    assert (
+        capabilities.prefill_cuda_graph
+        == EXPECTED_TTS_CAPABILITIES[architecture].prefill_cuda_graph
+    )
 
 
 @pytest.mark.parametrize("architecture", EXPECTED_TTS_CAPABILITIES)

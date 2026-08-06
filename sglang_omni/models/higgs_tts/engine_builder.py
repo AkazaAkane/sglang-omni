@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 class HiggsTtsEngineBuilder(TtsEngineBuilder):
     model_name = "Higgs TTS"
     context_length = 4096
+    prefill_cuda_graph_capability_architecture = (
+        "HiggsMultimodalQwen3ForConditionalGeneration"
+    )
 
     def __init__(
         self,
@@ -99,13 +102,6 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         )
 
     def customize_server_args(self, server_args: Any) -> None:
-        prefill_backend = server_args.cuda_graph_config.prefill.backend
-        if prefill_backend != "disabled":
-            raise RuntimeError(
-                "Higgs prefill CUDA graphs are disabled because padded prefill "
-                "changes model outputs; keep cuda_graph_config.prefill.backend="
-                f"'disabled', got {prefill_backend!r}"
-            )
         override_server_args(
             server_args,
             "sglang_omni.higgs_tts.disable_overlap_schedule",

@@ -17,7 +17,7 @@ from sglang_omni.scheduling.prefill_cuda_graph_policy import (
 def _capability(
     *,
     status: str = "validated",
-    default_buckets: tuple[int, ...] = (32, 64),
+    default_token_buckets: tuple[int, ...] = (32, 64),
     requirements: tuple[str, ...] = (),
     reason: str | None = None,
 ) -> PrefillCudaGraphCapability:
@@ -27,7 +27,7 @@ def _capability(
             PrefillCudaGraphBackendCapability(
                 backend="breakable",
                 status=status,
-                default_buckets=default_buckets,
+                default_token_buckets=default_token_buckets,
                 requirements=requirements,
                 reason=reason,
             ),
@@ -43,24 +43,24 @@ def _resolve(
         model_name="TestModel",
         capability=capability,
         requested_backend="breakable",
-        requested_buckets=None,
+        requested_token_buckets=None,
         **kwargs,
     )
 
 
-def test_disabled_request_needs_no_declaration_or_valid_buckets() -> None:
+def test_disabled_request_needs_no_declaration_or_valid_token_buckets() -> None:
     policy = resolve_prefill_cuda_graph_policy(
         model_name="TestModel",
         capability=None,
         requested_backend="disabled",
-        requested_buckets=[0, 0],
+        requested_token_buckets=[0, 0],
         runtime_requirements={"missing": False},
     )
 
     assert policy.enabled is False
     assert policy.requested_backend == "disabled"
     assert policy.resolved_backend is None
-    assert policy.buckets == ()
+    assert policy.token_buckets == ()
 
 
 def test_explicit_request_requires_declaration() -> None:
@@ -88,7 +88,7 @@ def test_undeclared_backend_lists_declared_backends() -> None:
             PrefillCudaGraphBackendCapability(
                 backend="full",
                 status="validated",
-                default_buckets=(16,),
+                default_token_buckets=(16,),
             ),
         ),
     )
@@ -104,7 +104,7 @@ def test_adapter_integration_requires_concrete_implementation() -> None:
             PrefillCudaGraphBackendCapability(
                 backend="breakable",
                 status="validated",
-                default_buckets=(16,),
+                default_token_buckets=(16,),
             ),
         ),
     )
@@ -113,14 +113,14 @@ def test_adapter_integration_requires_concrete_implementation() -> None:
         _resolve(capability)
 
 
-def test_validated_backend_uses_default_buckets() -> None:
+def test_validated_backend_uses_default_token_buckets() -> None:
     policy = _resolve(_capability())
 
     assert policy.enabled is True
     assert policy.resolved_backend == "breakable"
     assert policy.integration == "direct"
     assert policy.status == "validated"
-    assert policy.buckets == (32, 64)
+    assert policy.token_buckets == (32, 64)
 
 
 def test_experimental_backend_requires_explicit_allowance() -> None:
@@ -153,20 +153,20 @@ def test_unvalidated_backend_is_rejected() -> None:
         _resolve(_capability(status="unvalidated"))
 
 
-def test_explicit_buckets_override_defaults() -> None:
+def test_explicit_token_buckets_override_defaults() -> None:
     policy = resolve_prefill_cuda_graph_policy(
         model_name="TestModel",
         capability=_capability(),
         requested_backend="breakable",
-        requested_buckets=[8, 16],
+        requested_token_buckets=[8, 16],
     )
 
-    assert policy.buckets == (8, 16)
+    assert policy.token_buckets == (8, 16)
 
 
-def test_enabled_backend_requires_buckets() -> None:
-    with pytest.raises(ValueError, match="at least one bucket"):
-        _resolve(_capability(default_buckets=()))
+def test_enabled_backend_requires_token_buckets() -> None:
+    with pytest.raises(ValueError, match="at least one token bucket"):
+        _resolve(_capability(default_token_buckets=()))
 
 
 @pytest.mark.parametrize(
@@ -178,7 +178,7 @@ def test_enabled_backend_requires_buckets() -> None:
         ([True, 16], "integers"),
     ],
 )
-def test_invalid_explicit_buckets_are_rejected(
+def test_invalid_explicit_token_buckets_are_rejected(
     buckets: list[int],
     error: str,
 ) -> None:
@@ -187,7 +187,7 @@ def test_invalid_explicit_buckets_are_rejected(
             model_name="TestModel",
             capability=_capability(),
             requested_backend="breakable",
-            requested_buckets=buckets,
+            requested_token_buckets=buckets,
         )
 
 
@@ -216,9 +216,9 @@ def test_server_args_mapping() -> None:
         model_name="TestModel",
         capability=None,
         requested_backend="disabled",
-        requested_buckets=None,
+        requested_token_buckets=None,
     )
-    enabled = _resolve(_capability(default_buckets=(32, 64, 128)))
+    enabled = _resolve(_capability(default_token_buckets=(32, 64, 128)))
 
     assert prefill_cuda_graph_server_args(disabled) == {
         "cuda_graph_backend_prefill": "disabled"
@@ -240,7 +240,7 @@ def test_tc_piecewise_compiler_is_resolved_and_mapped(
             PrefillCudaGraphBackendCapability(
                 backend="tc_piecewise",
                 status="validated",
-                default_buckets=(16, 32),
+                default_token_buckets=(16, 32),
             ),
         ),
     )
@@ -249,7 +249,7 @@ def test_tc_piecewise_compiler_is_resolved_and_mapped(
         model_name="TestModel",
         capability=capability,
         requested_backend="tc_piecewise",
-        requested_buckets=None,
+        requested_token_buckets=None,
         requested_compiler=compiler,
     )
 
@@ -269,7 +269,7 @@ def test_compiler_requires_tc_piecewise_backend() -> None:
             model_name="TestModel",
             capability=_capability(),
             requested_backend="breakable",
-            requested_buckets=None,
+            requested_token_buckets=None,
             requested_compiler="inductor",
         )
 
@@ -281,7 +281,7 @@ def test_tc_piecewise_rejects_unknown_compiler() -> None:
             PrefillCudaGraphBackendCapability(
                 backend="tc_piecewise",
                 status="validated",
-                default_buckets=(16,),
+                default_token_buckets=(16,),
             ),
         ),
     )
@@ -291,6 +291,6 @@ def test_tc_piecewise_rejects_unknown_compiler() -> None:
             model_name="TestModel",
             capability=capability,
             requested_backend="tc_piecewise",
-            requested_buckets=None,
+            requested_token_buckets=None,
             requested_compiler="unknown",
         )

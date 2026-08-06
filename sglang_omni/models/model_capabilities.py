@@ -33,7 +33,7 @@ PrefillCudaGraphStatus = Literal[
 class PrefillCudaGraphBackendCapability:
     backend: PrefillCudaGraphBackend
     status: PrefillCudaGraphStatus
-    default_buckets: tuple[int, ...] = ()
+    default_token_buckets: tuple[int, ...] = ()
     requirements: tuple[str, ...] = ()
     reason: str | None = None
 
@@ -159,10 +159,10 @@ def _validate_prefill_cuda_graph_capability(
             raise ValueError(
                 f"blocked Prefill CUDA Graph backend {backend.backend} requires a reason"
             )
-        _validate_default_buckets(
+        _validate_default_token_buckets(
             backend.backend,
             backend.status,
-            backend.default_buckets,
+            backend.default_token_buckets,
         )
 
     if (
@@ -175,38 +175,42 @@ def _validate_prefill_cuda_graph_capability(
         )
 
 
-def _validate_default_buckets(
+def _validate_default_token_buckets(
     backend: str,
     status: PrefillCudaGraphStatus,
-    buckets: tuple[int, ...],
+    token_buckets: tuple[int, ...],
 ) -> None:
-    if not isinstance(buckets, tuple):
+    if not isinstance(token_buckets, tuple):
         raise ValueError(
-            f"default buckets for Prefill CUDA Graph backend {backend} must be a tuple"
+            "default token buckets for Prefill CUDA Graph backend "
+            f"{backend} must be a tuple"
         )
-    if not buckets and status not in ("blocked", "unvalidated"):
+    if not token_buckets and status not in ("blocked", "unvalidated"):
         raise ValueError(
-            f"default buckets for Prefill CUDA Graph backend {backend} "
+            f"default token buckets for Prefill CUDA Graph backend {backend} "
             "must not be empty"
         )
     if any(
-        not isinstance(bucket, int) or isinstance(bucket, bool) for bucket in buckets
+        not isinstance(bucket, int) or isinstance(bucket, bool)
+        for bucket in token_buckets
     ):
         raise ValueError(
-            f"default buckets for Prefill CUDA Graph backend {backend} "
+            f"default token buckets for Prefill CUDA Graph backend {backend} "
             "must contain integers"
         )
-    if any(bucket <= 0 for bucket in buckets):
+    if any(bucket <= 0 for bucket in token_buckets):
         raise ValueError(
-            f"default buckets for Prefill CUDA Graph backend {backend} must be positive"
+            "default token buckets for Prefill CUDA Graph backend "
+            f"{backend} must be positive"
         )
-    if len(set(buckets)) != len(buckets):
+    if len(set(token_buckets)) != len(token_buckets):
         raise ValueError(
-            f"default buckets for Prefill CUDA Graph backend {backend} must be unique"
+            "default token buckets for Prefill CUDA Graph backend "
+            f"{backend} must be unique"
         )
-    if any(left >= right for left, right in zip(buckets, buckets[1:])):
+    if any(left >= right for left, right in zip(token_buckets, token_buckets[1:])):
         raise ValueError(
-            f"default buckets for Prefill CUDA Graph backend {backend} "
+            f"default token buckets for Prefill CUDA Graph backend {backend} "
             "must be strictly increasing"
         )
 

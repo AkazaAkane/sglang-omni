@@ -639,6 +639,15 @@ def test_prefill_cuda_graph_explicit_disabled_override() -> None:
     assert overrides == {"cuda_graph_backend_prefill": "disabled"}
 
 
+def test_builder_disabled_backend_and_token_buckets_are_rejected() -> None:
+    builder = _make_prefill_policy_builder()
+    builder.prefill_cuda_graph_backend = "disabled"
+    builder.prefill_cuda_graph_token_buckets = (16,)
+
+    with pytest.raises(ValueError, match="token buckets cannot be set"):
+        builder._resolve_prefill_cuda_graph_policy(overrides={})
+
+
 def test_prefill_cuda_graph_synthetic_validated_capability_resolves() -> None:
     from sglang_omni.models.model_capabilities import (
         PrefillCudaGraphBackendCapability,
@@ -652,7 +661,7 @@ def test_prefill_cuda_graph_synthetic_validated_capability_resolves() -> None:
             PrefillCudaGraphBackendCapability(
                 backend="breakable",
                 status="validated",
-                default_buckets=(32, 64, 128),
+                default_token_buckets=(32, 64, 128),
             ),
         ),
     )
@@ -666,7 +675,7 @@ def test_prefill_cuda_graph_synthetic_validated_capability_resolves() -> None:
     )
 
     assert policy.enabled is True
-    assert policy.buckets == (16, 32)
+    assert policy.token_buckets == (16, 32)
     assert overrides == {
         "cuda_graph_backend_prefill": "breakable",
         "cuda_graph_bs_prefill": [16, 32],
@@ -677,12 +686,131 @@ def test_prefill_cuda_graph_synthetic_validated_capability_resolves() -> None:
 def test_prefill_cuda_graph_post_adjust_backend_is_authoritative() -> None:
     builder = _make_prefill_policy_builder()
     builder.prefill_cuda_graph_backend = "breakable"
+    builder.prefill_cuda_graph_token_buckets = (16, 32)
+    builder.prefill_cuda_graph_compiler = "inductor"
     overrides = {"cuda_graph_backend_prefill": "disabled"}
 
     policy = builder._resolve_prefill_cuda_graph_policy(overrides=overrides)
 
     assert policy.enabled is False
     assert overrides == {"cuda_graph_backend_prefill": "disabled"}
+
+
+@pytest.mark.parametrize(
+    "disable_override",
+    [
+        {"cuda_graph_backend_prefill": "disabled"},
+        {"disable_prefill_cuda_graph": True},
+        {"disable_cuda_graph": True},
+        {"disable_piecewise_cuda_graph": True},
+    ],
+)
+def test_higher_tier_disable_clears_lower_prefill_settings(
+    disable_override: dict[str, Any],
+) -> None:
+    from sglang_omni.scheduling import engine_factory
+
+    lower_defaults = {
+        "cuda_graph_backend_prefill": "tc_piecewise",
+        "cuda_graph_bs_prefill": [16, 32],
+        "cuda_graph_max_bs_prefill": 32,
+        "cuda_graph_tc_compiler": "inductor",
+    }
+    explicit_overrides = dict(disable_override)
+
+    engine_factory._normalize_prefill_override_precedence(
+        lower_defaults=lower_defaults,
+        explicit_overrides=explicit_overrides,
+    )
+    overrides = {**lower_defaults, **explicit_overrides}
+    policy = _make_prefill_policy_builder()._resolve_prefill_cuda_graph_policy(
+        overrides=overrides
+    )
+
+    assert policy.enabled is False
+    assert overrides["cuda_graph_backend_prefill"] == "disabled"
+    assert "cuda_graph_bs_prefill" not in overrides
+    assert "cuda_graph_max_bs_prefill" not in overrides
+    assert "cuda_graph_tc_compiler" not in overrides
+    assert "disable_prefill_cuda_graph" not in overrides
+
+
+def test_same_tier_disable_and_token_buckets_are_rejected() -> None:
+    from sglang_omni.scheduling import engine_factory
+
+    with pytest.raises(ValueError, match="same override tier"):
+        engine_factory._normalize_prefill_override_precedence(
+            lower_defaults={},
+            explicit_overrides={
+                "disable_prefill_cuda_graph": True,
+                "cuda_graph_bs_prefill": [16],
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("legacy_alias", "backend"),
+    [
+        ("enable_breakable_cuda_graph", "breakable"),
+        ("disable_piecewise_cuda_graph", "disabled"),
+        ("enforce_piecewise_cuda_graph", "tc_piecewise"),
+    ],
+)
+def test_legacy_prefill_backend_aliases_are_normalized(
+    legacy_alias: str,
+    backend: str,
+) -> None:
+    from sglang_omni.scheduling import engine_factory
+
+    explicit_overrides = {legacy_alias: True}
+    engine_factory._normalize_prefill_override_precedence(
+        lower_defaults={},
+        explicit_overrides=explicit_overrides,
+    )
+
+    assert explicit_overrides == {"cuda_graph_backend_prefill": backend}
+
+
+def test_explicit_backend_removes_lower_canonical_prefill_config() -> None:
+    from sglang_omni.scheduling import engine_factory
+
+    lower_defaults = {
+        "cuda_graph_config": {
+            "decode": {"backend": "full"},
+            "prefill": {"backend": "full", "bs": [64], "max_bs": 64},
+        }
+    }
+
+    engine_factory._normalize_prefill_override_precedence(
+        lower_defaults=lower_defaults,
+        explicit_overrides={"cuda_graph_backend_prefill": "disabled"},
+    )
+
+    assert lower_defaults == {"cuda_graph_config": {"decode": {"backend": "full"}}}
+
+
+def test_explicit_canonical_disable_clears_lower_prefill_settings() -> None:
+    from sglang_omni.scheduling import engine_factory
+
+    lower_defaults = {
+        "cuda_graph_backend_prefill": "tc_piecewise",
+        "cuda_graph_bs_prefill": [16, 32],
+        "cuda_graph_max_bs_prefill": 32,
+        "cuda_graph_tc_compiler": "inductor",
+    }
+    explicit_overrides = {"cuda_graph_config": {"prefill": {"backend": "disabled"}}}
+
+    engine_factory._normalize_prefill_override_precedence(
+        lower_defaults=lower_defaults,
+        explicit_overrides=explicit_overrides,
+    )
+    overrides = {**lower_defaults, **explicit_overrides}
+    policy = _make_prefill_policy_builder()._resolve_prefill_cuda_graph_policy(
+        overrides=overrides
+    )
+
+    assert policy.enabled is False
+    assert overrides == explicit_overrides
 
 
 def test_adjust_overrides_can_disable_requested_prefill() -> None:
@@ -704,7 +832,7 @@ def test_adjust_overrides_can_disable_requested_prefill() -> None:
     assert overrides == {"cuda_graph_backend_prefill": "disabled"}
 
 
-def test_prefill_cuda_graph_post_adjust_buckets_are_authoritative() -> None:
+def test_prefill_cuda_graph_post_adjust_token_buckets_are_authoritative() -> None:
     from sglang_omni.models.model_capabilities import (
         PrefillCudaGraphBackendCapability,
         PrefillCudaGraphCapability,
@@ -712,14 +840,14 @@ def test_prefill_cuda_graph_post_adjust_buckets_are_authoritative() -> None:
 
     builder = _make_prefill_policy_builder()
     builder.prefill_cuda_graph_backend = "breakable"
-    builder.prefill_cuda_graph_buckets = (16, 32)
+    builder.prefill_cuda_graph_token_buckets = (16, 32)
     builder.prefill_cuda_graph_capability = lambda: PrefillCudaGraphCapability(
         integration="direct",
         backends=(
             PrefillCudaGraphBackendCapability(
                 backend="breakable",
                 status="validated",
-                default_buckets=(16, 32),
+                default_token_buckets=(16, 32),
             ),
         ),
     )
@@ -727,7 +855,7 @@ def test_prefill_cuda_graph_post_adjust_buckets_are_authoritative() -> None:
 
     policy = builder._resolve_prefill_cuda_graph_policy(overrides=overrides)
 
-    assert policy.buckets == (32, 64)
+    assert policy.token_buckets == (32, 64)
     assert overrides["cuda_graph_bs_prefill"] == [32, 64]
 
 
@@ -745,7 +873,7 @@ def test_prefill_cuda_graph_startup_diagnostic(caplog) -> None:
             PrefillCudaGraphBackendCapability(
                 backend="breakable",
                 status="validated",
-                default_buckets=(32, 64, 128),
+                default_token_buckets=(32, 64, 128),
             ),
         ),
     )
@@ -769,7 +897,7 @@ def test_prefill_cuda_graph_startup_diagnostic(caplog) -> None:
     assert (
         "Prefill CUDA Graph policy: model=TestModel requested=breakable "
         "actual=breakable enabled=true integration=direct status=validated "
-        "buckets=[32, 64, 128] max_bs=128 compiler=eager changed=false "
+        "token_buckets=[32, 64, 128] max_bs=128 compiler=eager changed=false "
         "downgraded=false" in caplog.text
     )
 
@@ -816,7 +944,7 @@ def test_canonical_tc_piecewise_config_is_normalized() -> None:
             PrefillCudaGraphBackendCapability(
                 backend="tc_piecewise",
                 status="validated",
-                default_buckets=(16, 32),
+                default_token_buckets=(16, 32),
             ),
         ),
     )
@@ -862,7 +990,7 @@ def test_prefill_cuda_graph_upstream_downgrade_is_rejected(caplog) -> None:
             PrefillCudaGraphBackendCapability(
                 backend="breakable",
                 status="validated",
-                default_buckets=(32,),
+                default_token_buckets=(32,),
             ),
         ),
     )
@@ -900,7 +1028,7 @@ def test_real_server_args_preserves_validated_canonical_prefill_config() -> None
             PrefillCudaGraphBackendCapability(
                 backend="breakable",
                 status="validated",
-                default_buckets=(16, 32),
+                default_token_buckets=(16, 32),
             ),
         ),
     )

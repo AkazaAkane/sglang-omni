@@ -438,13 +438,13 @@ def _make_higgs_builder(**kwargs):
 def test_higgs_tts_engine_rejects_prefill_graph_override() -> None:
     builder = _make_higgs_builder()
 
-    with pytest.raises(RuntimeError, match="padded prefill changes model outputs"):
-        builder.customize_server_args(
-            SimpleNamespace(
-                cuda_graph_config=SimpleNamespace(
-                    prefill=SimpleNamespace(backend="full")
-                )
-            )
+    with pytest.raises(ValueError, match="padded prefill changes Higgs model outputs"):
+        builder._resolve_prefill_cuda_graph_policy(
+            overrides={
+                "cuda_graph_config": {
+                    "prefill": {"backend": "full", "bs": [64], "max_bs": 64}
+                }
+            }
         )
 
 

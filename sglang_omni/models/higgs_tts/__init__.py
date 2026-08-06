@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from transformers import AutoConfig
 
-from sglang_omni.models.model_capabilities import ModelCapabilities
+from sglang_omni.models.model_capabilities import (
+    ModelCapabilities,
+    PrefillCudaGraphCapability,
+)
 
 from . import config
 from .hf_config import HiggsMultimodalQwen3Config
@@ -25,6 +28,12 @@ CAPABILITIES = ModelCapabilities(
     supports_streaming_vocoder=True,
     supports_cuda_graph=True,
     supports_torch_compile=True,
+    prefill_cuda_graph=PrefillCudaGraphCapability(
+        integration="incompatible",
+        incompatible_reason=(
+            "padded prefill changes Higgs model outputs; keep prefill eager"
+        ),
+    ),
 )
 
 __all__ = ["CAPABILITIES", "config", "HiggsMultimodalQwen3Config"]

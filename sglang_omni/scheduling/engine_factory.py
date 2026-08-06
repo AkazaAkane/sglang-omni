@@ -32,6 +32,23 @@ _CANONICAL_PREFILL_KEYS = {
     "tc_compiler",
     "full_prefill_max_req",
 }
+_PREFILL_BACKEND_KEYS = (
+    "cuda_graph_backend_prefill",
+    "prefill_cuda_graph_backend",
+)
+_PREFILL_TOKEN_BUCKET_KEYS = (
+    "cuda_graph_bs_prefill",
+    "prefill_cuda_graph_token_buckets",
+)
+_PREFILL_COMPILER_KEYS = (
+    "cuda_graph_tc_compiler",
+    "prefill_cuda_graph_compiler",
+)
+_LEGACY_PREFILL_BACKEND_ALIASES = {
+    "enable_breakable_cuda_graph": "breakable",
+    "disable_piecewise_cuda_graph": "disabled",
+    "enforce_piecewise_cuda_graph": "tc_piecewise",
+}
 
 
 class SGLangGenerationEngineBuilder(ABC):
@@ -41,16 +58,21 @@ class SGLangGenerationEngineBuilder(ABC):
     request/result adapters, validation policy, and any stage-owned resources.
     Family-specific builders such as :class:`AsrEngineBuilder` and
     :class:`TtsEngineBuilder` define the lifecycle policy for each modality.
+
+    Prefill controls accept upstream ``cuda_graph_*_prefill`` keys or the
+    stage-facing ``prefill_cuda_graph_*`` aliases. Prefill ``bs`` values are
+    token buckets, not request batch-size buckets.
     """
 
     model_name: str
     context_length: int
     model_arch_override: str | None = None
+    prefill_cuda_graph_capability_architecture: str | None = None
     prefill_cuda_graph_backend: str | None = None
-    prefill_cuda_graph_buckets: list[int] | tuple[int, ...] | None = None
+    prefill_cuda_graph_token_buckets: list[int] | tuple[int, ...] | None = None
     prefill_cuda_graph_compiler: str | None = None
-    allow_experimental_prefill_cuda_graph = False
-    allow_performance_unproven_prefill_cuda_graph = False
+    allow_experimental_prefill_cuda_graph: bool = False
+    allow_performance_unproven_prefill_cuda_graph: bool = False
 
     def build(
         self,
@@ -75,9 +97,15 @@ class SGLangGenerationEngineBuilder(ABC):
 
         self.pre_infra_setup(checkpoint_dir)
 
+        stage_defaults = self.generation_defaults(dtype=dtype)
+        explicit_overrides = dict(server_args_overrides or {})
+        _normalize_prefill_override_precedence(
+            lower_defaults=stage_defaults,
+            explicit_overrides=explicit_overrides,
+        )
         overrides = build_generation_batch_overrides(
-            server_args_overrides=server_args_overrides,
-            **self.generation_defaults(dtype=dtype),
+            server_args_overrides=explicit_overrides,
+            **stage_defaults,
         )
         self.adjust_overrides(overrides)
         prefill_policy = self._resolve_prefill_cuda_graph_policy(
@@ -169,34 +197,16 @@ class SGLangGenerationEngineBuilder(ABC):
         return model_path
 
     def prefill_cuda_graph_capability(self) -> PrefillCudaGraphCapability | None:
-        from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
-
-        candidates = (
-            self.model_arch_override,
-            getattr(self, "architecture", None),
-        )
-        for architecture in candidates:
-            if not isinstance(architecture, str) or not architecture:
-                continue
-            capabilities = get_model_capabilities(architecture)
-            if capabilities is not None:
-                return capabilities.prefill_cuda_graph
-
-        model_package = ".".join(self.__class__.__module__.split(".")[:3])
-        package_architectures = {
-            config_cls.architecture
-            for config_cls in set(PIPELINE_CONFIG_REGISTRY.configs.values())
-            if ".".join(config_cls.__module__.split(".")[:3]) == model_package
-        }
-        if len(package_architectures) != 1:
+        architecture = self.prefill_cuda_graph_capability_architecture
+        if architecture is None:
             return None
-        architecture = package_architectures.pop()
         capabilities = get_model_capabilities(architecture)
         if capabilities is None:
             return None
         return capabilities.prefill_cuda_graph
 
     def prefill_cuda_graph_runtime_requirements(self) -> dict[str, bool]:
+        """Report model-specific prerequisites before explicit enablement."""
         return {}
 
     def _resolve_prefill_cuda_graph_policy(
@@ -204,6 +214,7 @@ class SGLangGenerationEngineBuilder(ABC):
         *,
         overrides: dict[str, Any],
     ) -> ResolvedPrefillCudaGraphPolicy:
+        _normalize_legacy_prefill_aliases(overrides)
         canonical_config, canonical_prefill = _extract_canonical_prefill_config(
             overrides
         )
@@ -211,51 +222,73 @@ class SGLangGenerationEngineBuilder(ABC):
         merged_backend = _pop_prefill_value(
             overrides,
             "prefill backend",
-            "cuda_graph_backend_prefill",
-            "prefill_cuda_graph_backend",
+            *_PREFILL_BACKEND_KEYS,
         )
-        merged_buckets = _pop_prefill_value(
+        merged_token_buckets = _pop_prefill_value(
             overrides,
-            "prefill buckets",
-            "cuda_graph_bs_prefill",
-            "prefill_cuda_graph_buckets",
+            "prefill token buckets",
+            *_PREFILL_TOKEN_BUCKET_KEYS,
         )
         merged_max_bs = overrides.pop("cuda_graph_max_bs_prefill", _MISSING)
         merged_compiler = _pop_prefill_value(
             overrides,
             "prefill compiler",
-            "cuda_graph_tc_compiler",
-            "prefill_cuda_graph_compiler",
+            *_PREFILL_COMPILER_KEYS,
         )
-        has_convenience_prefill = any(
-            value is not _MISSING
-            for value in (
-                merged_backend,
-                merged_buckets,
-                merged_max_bs,
-                merged_compiler,
+        disable_prefill = bool(overrides.pop("disable_prefill_cuda_graph", False))
+        disable_all_graphs = bool(overrides.get("disable_cuda_graph"))
+        has_convenience_prefill = (
+            any(
+                value is not _MISSING
+                for value in (
+                    merged_backend,
+                    merged_token_buckets,
+                    merged_max_bs,
+                    merged_compiler,
+                )
             )
-        ) or bool(overrides.get("disable_prefill_cuda_graph"))
+            or disable_prefill
+        )
         if canonical_prefill and has_convenience_prefill:
             raise ValueError(
                 "cuda_graph_config.prefill cannot be combined with Prefill CUDA "
                 "Graph convenience settings"
             )
 
-        requested_backend = canonical_prefill.pop("backend", _MISSING)
-        if requested_backend is _MISSING:
+        if (
+            disable_prefill
+            and merged_backend is not _MISSING
+            and merged_backend != "disabled"
+        ):
+            raise ValueError(
+                "Conflicting Prefill CUDA Graph settings: a disable flag cannot "
+                "be combined with an enabled prefill backend at the same tier"
+            )
+
+        canonical_backend = canonical_prefill.pop("backend", _MISSING)
+        clear_builder_prefill_settings = False
+        if canonical_backend is not _MISSING:
+            requested_backend = canonical_backend
+            clear_builder_prefill_settings = requested_backend == "disabled"
+        elif merged_backend is not _MISSING:
             requested_backend = merged_backend
-        if requested_backend is _MISSING:
-            if overrides.get("disable_prefill_cuda_graph"):
+            clear_builder_prefill_settings = requested_backend == "disabled"
+        else:
+            if disable_prefill or disable_all_graphs:
                 requested_backend = "disabled"
+                clear_builder_prefill_settings = True
             else:
                 requested_backend = self.prefill_cuda_graph_backend or "disabled"
 
-        requested_buckets = canonical_prefill.pop("bs", _MISSING)
-        if requested_buckets is _MISSING:
-            requested_buckets = merged_buckets
-        if requested_buckets is _MISSING:
-            requested_buckets = self.prefill_cuda_graph_buckets
+        requested_token_buckets = canonical_prefill.pop("bs", _MISSING)
+        if requested_token_buckets is _MISSING:
+            requested_token_buckets = merged_token_buckets
+        if requested_token_buckets is _MISSING:
+            requested_token_buckets = (
+                None
+                if clear_builder_prefill_settings
+                else self.prefill_cuda_graph_token_buckets
+            )
 
         requested_max_bs = canonical_prefill.pop("max_bs", _MISSING)
         if requested_max_bs is _MISSING:
@@ -267,7 +300,11 @@ class SGLangGenerationEngineBuilder(ABC):
         if requested_compiler is _MISSING:
             requested_compiler = merged_compiler
         if requested_compiler is _MISSING:
-            requested_compiler = self.prefill_cuda_graph_compiler
+            requested_compiler = (
+                None
+                if clear_builder_prefill_settings
+                else self.prefill_cuda_graph_compiler
+            )
 
         allow_experimental = _pop_policy_flag(
             overrides,
@@ -280,9 +317,10 @@ class SGLangGenerationEngineBuilder(ABC):
             self.allow_performance_unproven_prefill_cuda_graph,
         )
 
-        if requested_backend == "disabled" and requested_buckets is not None:
+        if requested_backend == "disabled" and requested_token_buckets is not None:
             raise ValueError(
-                "Prefill CUDA Graph buckets cannot be set when the backend is disabled"
+                "Prefill CUDA Graph token buckets cannot be set when the backend "
+                "is disabled"
             )
         if requested_backend == "disabled" and requested_max_bs is not _MISSING:
             raise ValueError(
@@ -310,7 +348,7 @@ class SGLangGenerationEngineBuilder(ABC):
             model_name=self.model_name,
             capability=capability,
             requested_backend=requested_backend,
-            requested_buckets=requested_buckets,
+            requested_token_buckets=requested_token_buckets,
             requested_compiler=requested_compiler,
             allow_experimental=allow_experimental,
             allow_performance_unproven=allow_performance_unproven,
@@ -320,11 +358,13 @@ class SGLangGenerationEngineBuilder(ABC):
                 else self.prefill_cuda_graph_runtime_requirements()
             ),
         )
-        if requested_max_bs is not _MISSING and requested_max_bs != max(policy.buckets):
+        if requested_max_bs is not _MISSING and requested_max_bs != max(
+            policy.token_buckets
+        ):
             raise ValueError(
-                "Conflicting Prefill CUDA Graph maximum bucket: "
+                "Conflicting Prefill CUDA Graph maximum token bucket: "
                 f"cuda_graph_max_bs_prefill={requested_max_bs!r}, "
-                f"resolved maximum={max(policy.buckets)!r}"
+                f"resolved maximum={max(policy.token_buckets)!r}"
             )
 
         if uses_canonical_prefill:
@@ -333,8 +373,8 @@ class SGLangGenerationEngineBuilder(ABC):
                 policy.resolved_backend if policy.enabled else "disabled"
             )
             if policy.enabled:
-                resolved_prefill["bs"] = list(policy.buckets)
-                resolved_prefill["max_bs"] = max(policy.buckets)
+                resolved_prefill["bs"] = list(policy.token_buckets)
+                resolved_prefill["max_bs"] = max(policy.token_buckets)
                 if policy.compiler is not None:
                     resolved_prefill["tc_compiler"] = policy.compiler
             canonical_config["prefill"] = resolved_prefill
@@ -350,7 +390,7 @@ class SGLangGenerationEngineBuilder(ABC):
     ) -> None:
         actual = server_args.cuda_graph_config.prefill
         actual_backend = actual.backend
-        actual_buckets = tuple(actual.bs or ())
+        actual_token_buckets = tuple(actual.bs or ())
         actual_max_bs = actual.max_bs
         actual_compiler = actual.tc_compiler
         expected_backend = policy.resolved_backend if policy.enabled else "disabled"
@@ -358,7 +398,7 @@ class SGLangGenerationEngineBuilder(ABC):
         downgraded = policy.enabled and actual_backend == "disabled"
         logger.info(
             "Prefill CUDA Graph policy: model=%s requested=%s actual=%s "
-            "enabled=%s integration=%s status=%s buckets=%s max_bs=%s "
+            "enabled=%s integration=%s status=%s token_buckets=%s max_bs=%s "
             "compiler=%s changed=%s downgraded=%s",
             self.model_name,
             policy.requested_backend,
@@ -366,7 +406,7 @@ class SGLangGenerationEngineBuilder(ABC):
             str(actual_backend != "disabled").lower(),
             policy.integration,
             policy.status,
-            list(actual_buckets),
+            list(actual_token_buckets),
             actual_max_bs,
             actual_compiler,
             str(changed).lower(),
@@ -377,14 +417,15 @@ class SGLangGenerationEngineBuilder(ABC):
             errors.append(
                 f"backend resolved to {actual_backend!r}, expected {expected_backend!r}"
             )
-        if policy.enabled and actual_buckets != policy.buckets:
+        if policy.enabled and actual_token_buckets != policy.token_buckets:
             errors.append(
-                f"buckets resolved to {actual_buckets!r}, expected {policy.buckets!r}"
+                "token buckets resolved to "
+                f"{actual_token_buckets!r}, expected {policy.token_buckets!r}"
             )
-        if policy.enabled and actual_max_bs != max(policy.buckets):
+        if policy.enabled and actual_max_bs != max(policy.token_buckets):
             errors.append(
                 f"max_bs resolved to {actual_max_bs!r}, "
-                f"expected {max(policy.buckets)!r}"
+                f"expected {max(policy.token_buckets)!r}"
             )
         if policy.compiler is not None and actual_compiler != policy.compiler:
             errors.append(
@@ -558,7 +599,9 @@ def _get_prefill_value(
     label: str,
     *keys: str,
 ) -> Any:
-    present = [(key, values[key]) for key in keys if key in values]
+    present = [
+        (key, values[key]) for key in keys if key in values and values[key] is not None
+    ]
     if not present:
         return _MISSING
     first_key, first_value = present[0]
@@ -569,6 +612,152 @@ def _get_prefill_value(
                 f"{first_key}={first_value!r}, {key}={value!r}"
             )
     return first_value
+
+
+def _normalize_prefill_override_precedence(
+    *,
+    lower_defaults: dict[str, Any],
+    explicit_overrides: dict[str, Any],
+) -> None:
+    _normalize_legacy_prefill_aliases(explicit_overrides)
+    explicit_canonical_prefill = _has_canonical_prefill(explicit_overrides)
+    explicit_setting_keys = _active_prefill_setting_keys(explicit_overrides)
+
+    if explicit_canonical_prefill:
+        if explicit_setting_keys:
+            raise ValueError(
+                "cuda_graph_config.prefill cannot be combined with Prefill CUDA "
+                "Graph convenience settings at the same override tier"
+            )
+        _remove_lower_prefill_settings(lower_defaults)
+        return
+
+    if explicit_setting_keys:
+        _remove_canonical_prefill(lower_defaults)
+        _remove_shadowed_lower_prefill_fields(
+            lower_defaults,
+            explicit_setting_keys,
+        )
+
+    explicit_backend = _get_prefill_value(
+        explicit_overrides,
+        "prefill backend",
+        *_PREFILL_BACKEND_KEYS,
+    )
+    explicit_disable = (
+        explicit_backend == "disabled"
+        or bool(explicit_overrides.get("disable_prefill_cuda_graph"))
+        or bool(explicit_overrides.get("disable_cuda_graph"))
+    )
+    if not explicit_disable:
+        return
+
+    if explicit_backend is not _MISSING and explicit_backend != "disabled":
+        raise ValueError(
+            "Conflicting Prefill CUDA Graph settings: a disable flag cannot be "
+            "combined with an enabled prefill backend at the same override tier"
+        )
+    conflicting_keys = explicit_setting_keys.intersection(
+        {
+            *_PREFILL_TOKEN_BUCKET_KEYS,
+            "cuda_graph_max_bs_prefill",
+            *_PREFILL_COMPILER_KEYS,
+        }
+    )
+    if conflicting_keys:
+        raise ValueError(
+            "Prefill CUDA Graph disable settings cannot be combined with token "
+            "buckets, maximum, or compiler settings at the same override tier: "
+            + ", ".join(sorted(conflicting_keys))
+        )
+    _remove_lower_prefill_settings(lower_defaults)
+
+
+def _normalize_legacy_prefill_aliases(values: dict[str, Any]) -> None:
+    for alias, backend in _LEGACY_PREFILL_BACKEND_ALIASES.items():
+        enabled = values.pop(alias, False)
+        if not enabled:
+            continue
+        current = _get_prefill_value(
+            values,
+            "prefill backend",
+            *_PREFILL_BACKEND_KEYS,
+        )
+        if current is not _MISSING and current != backend:
+            raise ValueError(
+                "Conflicting Prefill CUDA Graph backend settings: "
+                f"{alias}=True selects {backend!r}, existing backend={current!r}"
+            )
+        values["cuda_graph_backend_prefill"] = backend
+
+
+def _active_prefill_setting_keys(values: dict[str, Any]) -> set[str]:
+    keys = {
+        key
+        for key in (
+            *_PREFILL_BACKEND_KEYS,
+            *_PREFILL_TOKEN_BUCKET_KEYS,
+            "cuda_graph_max_bs_prefill",
+            *_PREFILL_COMPILER_KEYS,
+        )
+        if values.get(key) is not None
+    }
+    for key in ("disable_prefill_cuda_graph", "disable_cuda_graph"):
+        if values.get(key):
+            keys.add(key)
+    return keys
+
+
+def _has_canonical_prefill(values: dict[str, Any]) -> bool:
+    config = values.get("cuda_graph_config")
+    if hasattr(config, "to_dict"):
+        config = config.to_dict()
+    return isinstance(config, dict) and bool(config.get("prefill"))
+
+
+def _remove_canonical_prefill(values: dict[str, Any]) -> None:
+    config = values.get("cuda_graph_config")
+    if hasattr(config, "to_dict"):
+        config = config.to_dict()
+    if not isinstance(config, dict) or "prefill" not in config:
+        return
+    remaining = dict(config)
+    remaining.pop("prefill")
+    if remaining:
+        values["cuda_graph_config"] = remaining
+    else:
+        values.pop("cuda_graph_config", None)
+
+
+def _remove_shadowed_lower_prefill_fields(
+    lower_defaults: dict[str, Any],
+    explicit_setting_keys: set[str],
+) -> None:
+    groups = (
+        _PREFILL_BACKEND_KEYS,
+        _PREFILL_TOKEN_BUCKET_KEYS,
+        ("cuda_graph_max_bs_prefill",),
+        _PREFILL_COMPILER_KEYS,
+    )
+    for group in groups:
+        if explicit_setting_keys.intersection(group):
+            for key in group:
+                lower_defaults.pop(key, None)
+    if explicit_setting_keys.intersection(_PREFILL_BACKEND_KEYS):
+        lower_defaults.pop("disable_prefill_cuda_graph", None)
+
+
+def _remove_lower_prefill_settings(values: dict[str, Any]) -> None:
+    _remove_canonical_prefill(values)
+    for key in (
+        *_PREFILL_BACKEND_KEYS,
+        *_PREFILL_TOKEN_BUCKET_KEYS,
+        "cuda_graph_max_bs_prefill",
+        *_PREFILL_COMPILER_KEYS,
+        "disable_prefill_cuda_graph",
+        *_LEGACY_PREFILL_BACKEND_ALIASES,
+    ):
+        values.pop(key, None)
 
 
 def _extract_canonical_prefill_config(
