@@ -34,6 +34,31 @@ def build_default_cuda_graph_bs(max_bs: int) -> list[int]:
     return values
 
 
+def build_default_prefill_cuda_graph_bs(max_num_tokens: int) -> list[int]:
+    """Prefill token-count ladder mirroring sglang's generated default
+    (ServerArgs._generate_prefill_cuda_graph_batch_sizes).
+
+    Fine-grained at the bottom so radix-shortened extends pad minimally,
+    coarsening upward. Deployments pass the result as cuda_graph_bs_prefill:
+    the declaration stays explicit, only the arithmetic is shared. The cap is
+    appended when off-grid so max(bs) matches the declared budget.
+    """
+    max_num_tokens = int(max_num_tokens)
+    if max_num_tokens < 1:
+        raise ValueError("max_num_tokens must be >= 1")
+
+    values = list(range(4, 33, 4))
+    values.extend(range(48, 257, 16))
+    values.extend(range(288, 513, 32))
+    values.extend(range(576, 1025, 64))
+    values.extend(range(1280, 4097, 256))
+    values.extend(range(4608, max_num_tokens + 1, 512))
+    values = [size for size in values if size <= max_num_tokens]
+    if not values or values[-1] != max_num_tokens:
+        values.append(max_num_tokens)
+    return values
+
+
 def build_generation_batch_overrides(
     *,
     max_running_requests: int,

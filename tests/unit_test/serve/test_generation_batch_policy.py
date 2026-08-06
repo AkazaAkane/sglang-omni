@@ -9,6 +9,7 @@ import pytest
 
 from sglang_omni.scheduling.generation_batch_policy import (
     build_default_cuda_graph_bs,
+    build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
     get_decode_cuda_graph_bs,
     get_decode_cuda_graph_max_bs,
@@ -54,6 +55,19 @@ def test_default_cuda_graph_bs_matches_sglang_normal_buckets() -> None:
         56,
         64,
     ]
+
+
+def test_default_prefill_cuda_graph_bs_matches_sglang_ladder() -> None:
+    ladder = build_default_prefill_cuda_graph_bs(512)
+    assert ladder == (
+        list(range(4, 33, 4)) + list(range(48, 257, 16)) + list(range(288, 513, 32))
+    )
+    assert len(ladder) == 30
+
+    off_grid = build_default_prefill_cuda_graph_bs(100)
+    assert off_grid[-1] == 100
+    assert off_grid[:-1] == [4, 8, 12, 16, 20, 24, 28, 32, 48, 64, 80, 96]
+    assert build_default_prefill_cuda_graph_bs(2) == [2]
 
 
 def test_decode_cuda_graph_accessors_read_resolved_phase_config() -> None:
