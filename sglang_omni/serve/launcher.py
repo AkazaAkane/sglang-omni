@@ -201,6 +201,7 @@ def _model_capabilities_log_summary(
     capabilities = get_model_capabilities(architecture)
     if capabilities is None:
         return None
+    prefill_capability = capabilities.prefill_cuda_graph
     return {
         "architecture": architecture,
         "reference_audio": capabilities.supports_reference_audio,
@@ -208,6 +209,13 @@ def _model_capabilities_log_summary(
         "streaming_vocoder": capabilities.supports_streaming_vocoder,
         "cuda_graph": capabilities.supports_cuda_graph,
         "torch_compile": capabilities.supports_torch_compile,
+        "breakable_prefill_cuda_graph": (
+            prefill_capability is not None
+            and any(
+                backend.backend == "breakable"
+                for backend in prefill_capability.backends
+            )
+        ),
     }
 
 

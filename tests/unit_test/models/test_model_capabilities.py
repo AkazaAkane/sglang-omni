@@ -46,10 +46,14 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_cuda_graph=True,
         supports_torch_compile=True,
         prefill_cuda_graph=PrefillCudaGraphCapability(
-            integration="incompatible",
-            incompatible_reason=(
-                "padded prefill changes Higgs model outputs; keep prefill eager"
+            integration="direct",
+            backends=(
+                PrefillCudaGraphBackendCapability(
+                    backend="breakable",
+                    status="validated",
+                ),
             ),
+            preferred_backend="breakable",
         ),
     ),
     "MossTTSDelayModel": ModelCapabilities(
@@ -159,7 +163,10 @@ def test_only_higgs_declares_prefill_cuda_graph_policy() -> None:
     )
     higgs = EXPECTED_TTS_CAPABILITIES["HiggsMultimodalQwen3ForConditionalGeneration"]
     assert higgs.prefill_cuda_graph is not None
-    assert higgs.prefill_cuda_graph.integration == "incompatible"
+    assert higgs.prefill_cuda_graph.integration == "direct"
+    assert [backend.backend for backend in higgs.prefill_cuda_graph.backends] == [
+        "breakable"
+    ]
 
 
 @pytest.mark.parametrize("integration", ["direct", "adapter"])
@@ -409,6 +416,7 @@ def test_launcher_model_capabilities_log_summary() -> None:
         "streaming_vocoder": True,
         "cuda_graph": True,
         "torch_compile": True,
+        "breakable_prefill_cuda_graph": False,
     }
 
 

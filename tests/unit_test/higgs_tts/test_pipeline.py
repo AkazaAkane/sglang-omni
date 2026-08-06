@@ -14,6 +14,10 @@ import typer
 
 from sglang_omni.cli.serve import apply_mem_fraction_cli_overrides
 from sglang_omni.config.runtime import resolve_stage_static_factory_args
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    get_omni_prefill_inputs,
+)
 from sglang_omni.models.higgs_tts import stages
 from sglang_omni.models.higgs_tts import utils as higgs_utils
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
@@ -53,31 +57,24 @@ def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
     assert stages_by_name["vocoder"].can_accept_stream_before_payload is True
 
 
-def test_higgs_batch_metadata_prefers_sglang_rids() -> None:
+def test_higgs_batch_metadata_reads_prefill_payload() -> None:
+    # The breakable prefill graph's static batch drops rids; identity comes
+    # from the OmniPrefillInputs payload it does preserve. The fake models
+    # that static-batch shape: seq_lens carried live, no rids field needed.
     model = object.__new__(HiggsTTSModel)
+    payload = OmniPrefillInputs(
+        input_embeds=torch.zeros(2, 4),
+        rids=("payload-a", "payload-b"),
+    )
     forward_batch = SimpleNamespace(
-        rids=["stable-a", "stable-b"],
-        req_ids=["dropped-dynamic-attribute"],
         seq_lens=torch.tensor([1, 1]),
         sampling_info=None,
     )
 
-    req_ids, params = model._extract_batch_metadata(forward_batch)
+    req_ids, params = model._extract_batch_metadata(forward_batch, payload)
 
-    assert req_ids == ["stable-a", "stable-b"]
+    assert req_ids == ["payload-a", "payload-b"]
     assert len(params) == 2
-
-
-def test_higgs_batch_metadata_refuses_missing_request_ids() -> None:
-    model = object.__new__(HiggsTTSModel)
-    forward_batch = SimpleNamespace(
-        rids=None,
-        seq_lens=torch.tensor([1, 1]),
-        sampling_info=None,
-    )
-
-    with pytest.raises(RuntimeError, match="refusing to fabricate"):
-        model._extract_batch_metadata(forward_batch)
 
 
 def test_higgs_sampler_pool_rows_default_to_unseeded() -> None:
@@ -122,7 +119,10 @@ def test_higgs_request_row_seed_tracks_request_seed() -> None:
     assert model._sampler_pool.seeds[0].item() == 42
 
 
-def test_higgs_prefill_embeddings_use_exact_eager_shape() -> None:
+def test_higgs_prefill_embeddings_ride_the_batch_payload() -> None:
+    # before_prefill must leave forward_batch.input_embeds None (the breakable
+    # prefill graph gate rejects embeds-carrying batches) and deliver the
+    # exact-shape composed embeddings plus request identity via the payload.
     seeds: list[tuple[str, int | None]] = []
     model = SimpleNamespace(
         set_request_seed=lambda request_id, seed: seeds.append((request_id, seed)),
@@ -137,13 +137,23 @@ def test_higgs_prefill_embeddings_use_exact_eager_shape() -> None:
             req=SimpleNamespace(sampling_params=SimpleNamespace(sampling_seed=17))
         ),
     )
-    forward_batch = SimpleNamespace(input_embeds=raw_embeds)
+    forward_batch = SimpleNamespace(
+        input_embeds=None,
+        # Real prefill batches carry prepare_for_extend's per-request list of
+        # None entries, never a bare None.
+        mm_inputs=[None],
+        input_ids=torch.zeros(134, dtype=torch.long),
+        batch_size=1,
+    )
 
     runner.before_prefill(forward_batch, None, [request])
 
-    assert forward_batch.input_embeds.shape == (134, 4)
-    torch.testing.assert_close(forward_batch.input_embeds, raw_embeds)
-    assert forward_batch.req_ids == ["request"]
+    payload = get_omni_prefill_inputs(forward_batch)
+    assert forward_batch.input_embeds is None
+    assert payload is not None
+    assert payload.input_embeds.shape == (134, 4)
+    torch.testing.assert_close(payload.input_embeds, raw_embeds)
+    assert payload.rids == ("request",)
     assert seeds == [("request", 17)]
 
 
@@ -435,17 +445,29 @@ def _make_higgs_builder(**kwargs):
     )
 
 
-def test_higgs_tts_engine_rejects_prefill_graph_override() -> None:
+def test_higgs_tts_engine_prefill_backend_policy(caplog) -> None:
     builder = _make_higgs_builder()
 
-    with pytest.raises(ValueError, match="padded prefill changes Higgs model outputs"):
-        builder._resolve_prefill_cuda_graph_policy(
-            overrides={
-                "cuda_graph_config": {
-                    "prefill": {"backend": "full", "bs": [64], "max_bs": 64}
-                }
-            }
-        )
+    from sglang_omni.models.higgs_tts import CAPABILITIES
+
+    capability = CAPABILITIES.prefill_cuda_graph
+    assert capability is not None
+    assert capability.integration == "direct"
+    assert capability.preferred_backend == "breakable"
+
+    disabled_args = FakeServerArgs(
+        cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend="disabled"))
+    )
+    builder.customize_server_args(disabled_args)
+    assert disabled_args.disable_overlap_schedule is True
+
+    breakable_args = FakeServerArgs(
+        cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend="breakable"))
+    )
+    with caplog.at_level(logging.WARNING):
+    builder.customize_server_args(breakable_args)
+    assert breakable_args.disable_overlap_schedule is True
+    assert any("not bit-identical" in record.message for record in caplog.records)
 
 
 @pytest.mark.parametrize("fraction", [0.0, 1.0, 1.2, -0.1])

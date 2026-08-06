@@ -13,6 +13,7 @@ from sglang_omni.models.model_capabilities import (
 )
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
+    get_prefill_cuda_graph_backend,
     validate_generation_batch_policy,
 )
 from sglang_omni.scheduling.prefill_cuda_graph_policy import (
@@ -127,6 +128,11 @@ class SGLangGenerationEngineBuilder(ABC):
         infra_kwargs = dict(self.infra_kwargs())
         if self.model_arch_override is not None:
             infra_kwargs.setdefault("model_arch_override", self.model_arch_override)
+        prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
+        if prefill_graph_backend == "breakable":
+            # SGLang registers the prefill input_embeds slot only for
+            # multimodal model configs; the payload channel needs it.
+            infra_kwargs.setdefault("enable_prefill_input_embeds", True)
         want_cuda_graph, (
             model_worker,
             tree_cache,
@@ -157,6 +163,12 @@ class SGLangGenerationEngineBuilder(ABC):
         if want_cuda_graph:
             model_worker.model_runner.init_cuda_graphs()
             self.post_cuda_graph_setup(model, server_args)
+            if prefill_graph_backend != "disabled":
+                from sglang_omni.utils import cuda_graph_batch_validator
+
+                cuda_graph_batch_validator.attest_prefill_cuda_graphs(
+                    model_worker.model_runner, server_args
+                )
 
         try:
             # Model-local encoder graphs and caches must be initialized after

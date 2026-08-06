@@ -14,6 +14,7 @@ from transformers import AutoConfig
 
 from sglang_omni.models.model_capabilities import (
     ModelCapabilities,
+    PrefillCudaGraphBackendCapability,
     PrefillCudaGraphCapability,
 )
 
@@ -29,10 +30,14 @@ CAPABILITIES = ModelCapabilities(
     supports_cuda_graph=True,
     supports_torch_compile=True,
     prefill_cuda_graph=PrefillCudaGraphCapability(
-        integration="incompatible",
-        incompatible_reason=(
-            "padded prefill changes Higgs model outputs; keep prefill eager"
+        integration="direct",
+        backends=(
+            PrefillCudaGraphBackendCapability(
+                backend="breakable",
+                status="validated",
+            ),
         ),
+        preferred_backend="breakable",
     ),
 )
 
