@@ -266,21 +266,15 @@ def read_model_buffer_capacity(model: object) -> tuple[int | None, str]:
 
 
 def attest_prefill_cuda_graphs(model_runner: Any, server_args: Any) -> None:
-    """Assert the captured prefill CUDA graphs match the declared policy.
-
-    Called after ``init_cuda_graphs()`` for stages that declared a breakable
-    prefill backend. SGLang can silently downgrade to eager at several
-    eligibility gates (decoder discovery, GQA layout, capture memory); a
-    declared-but-absent prefill graph must fail startup loudly instead of
-    serving eager prefill unnoticed.
-    """
+    """Assert the captured prefill CUDA graphs match the declared policy;
+    SGLang downgrades to eager without raising at several capture-eligibility
+    gates, and a declared-but-absent graph must fail startup loudly."""
     from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
         PrefillCudaGraphRunner,
     )
 
     prefill_cfg = server_args.cuda_graph_config.prefill
-    # init_cuda_graphs always assigns prefill_cuda_graph_runner (possibly the
-    # eager runner or None); attestation runs strictly after it.
+    # init_cuda_graphs always assigns this before attestation runs.
     runner = model_runner.prefill_cuda_graph_runner
     if not isinstance(runner, PrefillCudaGraphRunner):
         raise RuntimeError(

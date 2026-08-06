@@ -102,17 +102,6 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         )
 
     def customize_server_args(self, server_args: Any) -> None:
-        # Prefill graphs are opt-in per deployment (cuda_graph_backend_prefill
-        # plus explicit cuda_graph_bs_prefill buckets in server_args_overrides)
-        # and remain eager unless the resolved policy enables them.
-        if server_args.cuda_graph_config.prefill.backend == "breakable":
-            # Bucket-padded replay is not bit-identical to eager prefill
-            # (kernel tiling varies with the padded token count); outputs are
-            # quality-equivalent, not byte-equivalent.
-            logger.warning(
-                "Higgs breakable prefill CUDA graphs enabled: padded-bucket "
-                "replay is not bit-identical to eager prefill"
-            )
         override_server_args(
             server_args,
             "sglang_omni.higgs_tts.disable_overlap_schedule",

@@ -340,16 +340,12 @@ def test_every_generation_model_has_a_probe():
     assert expected <= set(cgv._BUFFER_PROBES)
 
 
-# --- breakable prefill graph attestation -----------------------------------
-
-
 def _real_prefill_runner(
     *,
     backend: str = "breakable",
     buckets: tuple[int, ...] = (128, 256),
     has_slot: bool = True,
 ):
-    """Fake with the real PrefillCudaGraphRunner type so isinstance holds."""
     from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
         PrefillCudaGraphRunner,
     )

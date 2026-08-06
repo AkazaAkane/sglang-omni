@@ -27,11 +27,8 @@ class ModelWorkerConfig:
     weight_prefix: str | None = None
     nccl_port: int | None = None
     total_gpu_memory_fraction: float | None = None
-    # Breakable-CUDA-graph prefill: SGLang's PrefillCudaGraphRunner registers
-    # its static input_embeds slot only for multimodal model configs, so a
-    # stage whose prefill runs runner-composed embeddings under BCG opts in
-    # here and _init_model_config marks the config multimodal before the
-    # SGLang ModelRunner is constructed.
+    # Registers SGLang's static prefill input_embeds slot by marking the
+    # model config multimodal in _init_model_config.
     enable_prefill_input_embeds: bool = False
 
 
@@ -115,21 +112,11 @@ class ModelWorker:
             self._apply_arch_override(self.model_config, self.model_arch_override)
 
         if self.enable_prefill_input_embeds:
-            # Flipped after construction, deliberately. ServerArgs already ran
-            # its multimodal gates during __post_init__ against its own cached
-            # ModelConfig (server_args.get_model_config()), which for a
-            # multimodal config would disable breakable prefill graphs and
-            # chunked prefill. This worker-owned instance is a distinct object
-            # and nothing re-runs those gates, so the flip only unlocks the
-            # prefill input_embeds buffer slot at init_cuda_graphs() time.
-            # attest_prefill_cuda_graphs fails startup if the slot is missing,
-            # so a change to either the ordering or the instance identity
-            # cannot pass silently.
-            # Known side effect: flashinfer/aiter fork their extend path on
-            # this flag (paged wrapper instead of ragged), so deployments
-            # resolving to those backends run different prefill kernels than
-            # their non-BCG baseline. Correct but not bit-identical; the
-            # per-deployment quality gates arbitrate, same as bucket padding.
+            # Deliberately flipped only on this worker-owned config, after
+            # ServerArgs already ran its multimodal gates against its own
+            # cached ModelConfig; re-running those gates on a multimodal
+            # config would disable breakable prefill graphs and chunked
+            # prefill.
             self.model_config.is_multimodal = True
 
     @staticmethod

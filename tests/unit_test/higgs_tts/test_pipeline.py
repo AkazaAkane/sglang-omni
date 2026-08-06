@@ -58,9 +58,6 @@ def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
 
 
 def test_higgs_batch_metadata_reads_prefill_payload() -> None:
-    # The breakable prefill graph's static batch drops rids; identity comes
-    # from the OmniPrefillInputs payload it does preserve. The fake models
-    # that static-batch shape: seq_lens carried live, no rids field needed.
     model = object.__new__(HiggsTTSModel)
     payload = OmniPrefillInputs(
         input_embeds=torch.zeros(2, 4),
@@ -120,9 +117,6 @@ def test_higgs_request_row_seed_tracks_request_seed() -> None:
 
 
 def test_higgs_prefill_embeddings_ride_the_batch_payload() -> None:
-    # before_prefill must leave forward_batch.input_embeds None (the breakable
-    # prefill graph gate rejects embeds-carrying batches) and deliver the
-    # exact-shape composed embeddings plus request identity via the payload.
     seeds: list[tuple[str, int | None]] = []
     model = SimpleNamespace(
         set_request_seed=lambda request_id, seed: seeds.append((request_id, seed)),
@@ -139,8 +133,6 @@ def test_higgs_prefill_embeddings_ride_the_batch_payload() -> None:
     )
     forward_batch = SimpleNamespace(
         input_embeds=None,
-        # Real prefill batches carry prepare_for_extend's per-request list of
-        # None entries, never a bare None.
         mm_inputs=[None],
         input_ids=torch.zeros(134, dtype=torch.long),
         batch_size=1,
@@ -445,7 +437,7 @@ def _make_higgs_builder(**kwargs):
     )
 
 
-def test_higgs_tts_engine_prefill_backend_policy(caplog) -> None:
+def test_higgs_tts_engine_prefill_backend_policy() -> None:
     builder = _make_higgs_builder()
 
     from sglang_omni.models.higgs_tts import CAPABILITIES
@@ -455,19 +447,11 @@ def test_higgs_tts_engine_prefill_backend_policy(caplog) -> None:
     assert capability.integration == "direct"
     assert capability.preferred_backend == "breakable"
 
-    disabled_args = FakeServerArgs(
+    server_args = FakeServerArgs(
         cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend="disabled"))
     )
-    builder.customize_server_args(disabled_args)
-    assert disabled_args.disable_overlap_schedule is True
-
-    breakable_args = FakeServerArgs(
-        cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend="breakable"))
-    )
-    with caplog.at_level(logging.WARNING):
-    builder.customize_server_args(breakable_args)
-    assert breakable_args.disable_overlap_schedule is True
-    assert any("not bit-identical" in record.message for record in caplog.records)
+    builder.customize_server_args(server_args)
+    assert server_args.disable_overlap_schedule is True
 
 
 @pytest.mark.parametrize("fraction", [0.0, 1.0, 1.2, -0.1])

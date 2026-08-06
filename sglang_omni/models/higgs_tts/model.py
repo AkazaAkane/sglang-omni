@@ -217,13 +217,8 @@ class HiggsTTSModel(nn.Module):
 
     @property
     def language_model(self) -> Qwen3ForCausalLM:
-        """Expose the decoder for SGLang prefill-graph discovery.
-
-        ``resolve_language_model`` checks ``.model`` then ``.language_model``
-        and descends to ``.layers``; this class has no ``model`` attribute, so
-        the property is the discovery path. A property (not a submodule
-        assignment) keeps the parameter tree free of a duplicate alias.
-        """
+        """Decoder handle for SGLang prefill-graph discovery; a property
+        keeps the parameter tree free of a duplicate alias."""
         return self.backbone
 
     def get_input_embeddings(self) -> nn.Embedding:
@@ -452,11 +447,6 @@ class HiggsTTSModel(nn.Module):
                 input_ids, batch_size=input_ids.shape[0]
             )
         else:
-            # The payload is the single prefill input source on both the
-            # eager and graph paths: before_prefill attaches it to every
-            # prefill batch, and sglang's extend kwargs never carry
-            # input_embeds because the batch field stays None (the breakable
-            # graph gate requires that).
             prefill_inputs = get_omni_prefill_inputs(forward_batch)
             if prefill_inputs is None:
                 raise RuntimeError(
@@ -502,10 +492,8 @@ class HiggsTTSModel(nn.Module):
                 hidden_states_last, req_ids, gen_params
             )
 
-        # Rows here are per-request (bs), not per-token. The breakable graph
-        # runner's replay trim slices outputs to [:num_extend_tokens], which
-        # is a no-op for these shapes only because bs <= extend tokens always
-        # holds (every request extends at least one token).
+        # Rows are per-request, not per-token; the graph runner's replay trim
+        # is a no-op on these shapes only because bs <= extend tokens.
         return LogitsProcessorOutput(
             next_token_logits=text_logits_BV,
             hidden_states=hidden_states_last,
@@ -542,11 +530,8 @@ class HiggsTTSModel(nn.Module):
         forward_batch,
         prefill_inputs: OmniPrefillInputs,
     ) -> tuple[list[str], list[HiggsGenParams]]:
-        # The payload is the identity source: the breakable graph runner's
-        # static batch drops ``ForwardBatch.rids``, and attach validated
-        # len(rids) == batch_size against the live batch. ``sampling_info``
-        # is carried into the static batch by reference, so per-request
-        # sampling params survive replay.
+        # The payload is the identity source: the graph runner's static batch
+        # does not preserve ForwardBatch.rids.
         req_ids = [str(r) for r in prefill_inputs.rids]
         batch_size = self._infer_batch_size(forward_batch)
         gen_params = self._gen_params_for_batch(forward_batch.sampling_info, batch_size)

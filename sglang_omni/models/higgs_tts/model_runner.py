@@ -87,9 +87,6 @@ class HiggsTTSModelRunner(ModelRunner):
             self.model.set_request_seed(
                 req.request_id, req.data.req.sampling_params.sampling_seed
             )
-        # Batch-carried prefill inputs: forward_batch.input_embeds stays None
-        # so the breakable prefill CUDA graph gate admits the batch; the model
-        # forward consumes the payload on both the graph and eager paths.
         attach_omni_prefill_inputs(
             forward_batch,
             OmniPrefillInputs(

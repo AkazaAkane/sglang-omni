@@ -1,22 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Batch-carried prefill inputs for breakable-CUDA-graph (BCG) prefill.
+"""Batch-carried prefill inputs for breakable prefill CUDA graphs.
 
-SGLang's prefill graph runner rejects batches that carry
-``forward_batch.input_embeds`` and its replay-time static batch drops dynamic
-attributes and ``rids``. It does, however, copy ``mm_inputs`` verbatim into
-the static batch, and nothing on the omni-active runner path dereferences
-that field. Runner-composed prefill conditioning therefore crosses the graph
-boundary as an :class:`OmniPrefillInputs` payload stored in
-``forward_batch.mm_inputs``: the model's eager outer forward reads it, passes
-the embeddings into its decoder call, and SGLang's replay hook copies them
-into the captured ``input_embeds`` slot. The same read path serves the eager
-fallback, so graph and eager prefills consume identical inputs.
-
-On a real prefill batch ``mm_inputs`` is never ``None``:
-``ScheduleBatch.prepare_for_extend`` appends ``req.multimodal_inputs`` for
-every request, so a text-only TTS batch arrives with a per-request list of
-``None`` entries. Attaching replaces that placeholder list on the
-ForwardBatch only; ``ScheduleBatch.multimodal_inputs`` is left untouched.
+Runner-composed prefill conditioning (embeddings plus request identity)
+crosses the graph boundary as an OmniPrefillInputs payload stored on
+ForwardBatch.mm_inputs: the prefill graph gate rejects batches carrying
+input_embeds, and the replay-time static batch preserves mm_inputs but not
+rids. The model's forward reads the payload on both the graph and eager
+paths. On a real prefill batch mm_inputs is never None: prepare_for_extend
+fills it with one entry per request (None for text-only requests), and
+attaching replaces that placeholder list on the ForwardBatch only.
 """
 
 from __future__ import annotations
@@ -31,9 +23,8 @@ import torch
 class OmniPrefillInputs:
     """Per-forward prefill conditioning composed by an omni model runner.
 
-    ``input_embeds`` covers exactly the extend-window tokens of the batch, in
-    model dtype. ``rids`` carries request identity for the eager tail; the
-    graph runner's static batch does not preserve ``ForwardBatch.rids``.
+    input_embeds covers exactly the extend-window tokens of the batch, in
+    model dtype. rids carries request identity for the eager tail.
     """
 
     input_embeds: torch.Tensor
@@ -43,12 +34,7 @@ class OmniPrefillInputs:
 def attach_omni_prefill_inputs(
     forward_batch: Any, prefill_inputs: OmniPrefillInputs
 ) -> None:
-    """Stow ``prefill_inputs`` on ``forward_batch.mm_inputs``.
-
-    ``forward_batch.input_embeds`` must stay ``None``: the SGLang prefill
-    graph gate rejects embeds-carrying batches, and the model forward is the
-    single consumer of the payload on both the graph and eager paths.
-    """
+    """Stow prefill_inputs on forward_batch.mm_inputs."""
     if forward_batch.input_embeds is not None:
         raise RuntimeError(
             "OmniPrefillInputs requires forward_batch.input_embeds to stay "
@@ -60,10 +46,6 @@ def attach_omni_prefill_inputs(
             "forward_batch.mm_inputs already carries OmniPrefillInputs; "
             "refusing to attach twice to the same batch"
         )
-    # prepare_for_extend fills mm_inputs with one entry per request (None for
-    # text-only requests), so the field is a list of Nones on every real
-    # prefill batch. Replace that placeholder; refuse to displace genuine
-    # SGLang multimodal inputs.
     if mm_inputs is not None and any(item is not None for item in mm_inputs):
         raise RuntimeError(
             "forward_batch.mm_inputs carries SGLang multimodal inputs; "
@@ -86,11 +68,8 @@ def attach_omni_prefill_inputs(
 
 
 def get_omni_prefill_inputs(forward_batch: Any) -> OmniPrefillInputs | None:
-    """Return the payload attached by :func:`attach_omni_prefill_inputs`.
-
-    Returns ``None`` for batches without a payload, including batches whose
-    ``mm_inputs`` carries genuine SGLang multimodal inputs.
-    """
+    """Return the attached payload, or None for batches without one,
+    including batches whose mm_inputs carries genuine multimodal inputs."""
     payload = forward_batch.mm_inputs
     if isinstance(payload, OmniPrefillInputs):
         return payload
