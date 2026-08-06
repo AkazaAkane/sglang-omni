@@ -438,14 +438,21 @@ def _make_higgs_builder(**kwargs):
 
 
 def test_higgs_tts_engine_prefill_backend_policy() -> None:
-    builder = _make_higgs_builder()
-
     from sglang_omni.models.higgs_tts import CAPABILITIES
+    from sglang_omni.scheduling.generation_batch_policy import (
+        build_default_prefill_cuda_graph_bs,
+    )
+
+    builder = _make_higgs_builder()
 
     capability = CAPABILITIES.prefill_cuda_graph
     assert capability is not None
     assert capability.integration == "direct"
     assert capability.preferred_backend == "breakable"
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+    assert defaults["cuda_graph_backend_prefill"] == "breakable"
+    assert defaults["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(512)
 
     server_args = FakeServerArgs(
         cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend="disabled"))
