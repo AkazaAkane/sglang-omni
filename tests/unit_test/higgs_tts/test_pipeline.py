@@ -251,7 +251,7 @@ def test_higgs_streaming_pipeline_rejects_conflicting_runtime_stride() -> None:
         )
 
 
-def test_higgs_tts_engine_enables_decode_graphs_with_eager_prefill(monkeypatch) -> None:
+def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
     from sglang_omni.models.higgs_tts import model_runner as model_runner_mod
     from sglang_omni.models.higgs_tts import request_builders
     from sglang_omni.scheduling import (
@@ -260,12 +260,18 @@ def test_higgs_tts_engine_enables_decode_graphs_with_eager_prefill(monkeypatch) 
         omni_scheduler,
         sglang_backend,
     )
+    from sglang_omni.utils import cuda_graph_batch_validator
 
     captured: dict[str, object] = {}
-    infrastructure_saw_graph_disabled: list[bool] = []
-    init_graph_calls: list[bool] = []
+    records = {
+        "captured": captured,
+        "infrastructure_saw_graph_disabled": [],
+        "init_graph_calls": [],
+        "attest_calls": [],
+    }
 
     def fake_build_sglang_server_args(checkpoint_dir, context_length, **overrides):
+        prefill_bs = overrides.get("cuda_graph_bs_prefill")
         server_args = FakeServerArgs(
             disable_cuda_graph=overrides["disable_cuda_graph"],
             disable_overlap_schedule=False,
@@ -273,12 +279,23 @@ def test_higgs_tts_engine_enables_decode_graphs_with_eager_prefill(monkeypatch) 
             max_running_requests=overrides["max_running_requests"],
             cuda_graph_max_bs=overrides["cuda_graph_max_bs"],
             cuda_graph_bs=overrides["cuda_graph_bs"],
+            chunked_prefill_size=overrides.get("chunked_prefill_size"),
+            max_prefill_tokens=overrides.get("max_prefill_tokens", 16384),
+            tp_size=1,
             cuda_graph_config=SimpleNamespace(
                 decode=SimpleNamespace(
                     max_bs=overrides["cuda_graph_max_bs"],
                     bs=overrides["cuda_graph_bs"],
                 ),
-                prefill=SimpleNamespace(backend="disabled", bs=[]),
+                prefill=SimpleNamespace(
+                    backend=overrides.get("cuda_graph_backend_prefill", "disabled"),
+                    bs=prefill_bs,
+                    max_bs=overrides.get("cuda_graph_max_bs_prefill"),
+                    tc_compiler=None,
+                ),
+            ),
+            _cuda_graph_config_locked=(
+                frozenset({("prefill", "bs")}) if prefill_bs else frozenset()
             ),
             torch_compile_max_bs=32,
         )
@@ -289,9 +306,11 @@ def test_higgs_tts_engine_enables_decode_graphs_with_eager_prefill(monkeypatch) 
         return server_args
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
-        del kwargs
         captured["gpu_id"] = gpu_id
-        infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
+        captured["infra_kwargs"] = dict(kwargs)
+        records["infrastructure_saw_graph_disabled"].append(
+            bool(server_args.disable_cuda_graph)
+        )
         model = SimpleNamespace(
             backbone=SimpleNamespace(),
             sampler_pool_max_running_requests=64,
@@ -300,7 +319,7 @@ def test_higgs_tts_engine_enables_decode_graphs_with_eager_prefill(monkeypatch) 
         model_runner = SimpleNamespace(model=model)
 
         def init_cuda_graphs() -> None:
-            init_graph_calls.append(True)
+            records["init_graph_calls"].append(True)
 
         model_runner.init_cuda_graphs = init_cuda_graphs
         return (
@@ -342,6 +361,13 @@ def test_higgs_tts_engine_enables_decode_graphs_with_eager_prefill(monkeypatch) 
     monkeypatch.setattr(higgs_utils, "truncate_rope_to_bf16", lambda model: None)
     monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", FakeOutputProcessor)
     monkeypatch.setattr(model_runner_mod, "HiggsTTSModelRunner", FakeModelRunner)
+    monkeypatch.setattr(
+        cuda_graph_batch_validator,
+        "attest_prefill_cuda_graphs",
+        lambda model_runner, server_args: records["attest_calls"].append(
+            (model_runner, server_args)
+        ),
+    )
 
     def fake_make_adapters(**kwargs):
         captured["adapter_kwargs"] = kwargs
@@ -351,6 +377,18 @@ def test_higgs_tts_engine_enables_decode_graphs_with_eager_prefill(monkeypatch) 
         request_builders, "make_higgs_scheduler_adapters", fake_make_adapters
     )
     monkeypatch.setattr(omni_scheduler, "OmniScheduler", FakeScheduler)
+    return records
+
+
+def test_higgs_tts_engine_default_enables_breakable_prefill_graphs(
+    monkeypatch,
+) -> None:
+    from sglang_omni.scheduling.generation_batch_policy import (
+        build_default_prefill_cuda_graph_bs,
+    )
+
+    records = _install_higgs_engine_build_fakes(monkeypatch)
+    captured = records["captured"]
 
     stages.create_sglang_tts_engine_executor("bosonai/higgs-tts-3-4b")
 
@@ -375,12 +413,18 @@ def test_higgs_tts_engine_enables_decode_graphs_with_eager_prefill(monkeypatch) 
     assert captured["overrides"]["cuda_graph_max_bs"] == 64
     assert captured["overrides"]["max_running_requests"] == 64
     assert "cuda_graph_config" not in captured["overrides"]
-    assert captured["server_args"].cuda_graph_config.prefill.backend == "disabled"
+    assert captured["overrides"]["cuda_graph_backend_prefill"] == "breakable"
+    assert captured["overrides"][
+        "cuda_graph_bs_prefill"
+    ] == build_default_prefill_cuda_graph_bs(512)
+    assert captured["server_args"].cuda_graph_config.prefill.backend == "breakable"
+    assert captured["infra_kwargs"]["enable_prefill_input_embeds"] is True
+    assert len(records["attest_calls"]) == 1
     assert captured["server_args"].disable_overlap_schedule is True
     assert captured["server_args"].enable_torch_compile is False
     assert captured["server_args"].torch_compile_max_bs == 32
-    assert infrastructure_saw_graph_disabled == [True]
-    assert init_graph_calls == [True]
+    assert records["infrastructure_saw_graph_disabled"] == [True]
+    assert records["init_graph_calls"] == [True]
     assert captured["adapter_kwargs"] == {
         "max_new_tokens_cap": 2048,
         "stream_stride": DEFAULT_HIGGS_STREAM_STRIDE,
@@ -396,6 +440,35 @@ def test_higgs_tts_engine_enables_decode_graphs_with_eager_prefill(monkeypatch) 
         captured["stream_outbox"]
         is captured["scheduler_kwargs"]["model_runner"]._outbox
     )
+
+
+def test_higgs_tts_engine_disable_cuda_graph_override_disables_prefill(
+    monkeypatch,
+) -> None:
+    from sglang_omni.models.higgs_tts.engine_builder import HiggsTtsEngineBuilder
+
+    records = _install_higgs_engine_build_fakes(monkeypatch)
+    captured = records["captured"]
+
+    builder = HiggsTtsEngineBuilder(
+        max_new_tokens=2048,
+        max_running_requests=64,
+        cuda_graph_max_bs=64,
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+    )
+    builder.build(
+        "bosonai/higgs-tts-3-4b",
+        server_args_overrides={"disable_cuda_graph": True},
+    )
+
+    assert captured["overrides"]["disable_cuda_graph"] is True
+    assert captured["overrides"]["cuda_graph_backend_prefill"] == "disabled"
+    assert "cuda_graph_bs_prefill" not in captured["overrides"]
+    assert captured["server_args"].cuda_graph_config.prefill.backend == "disabled"
+    assert "enable_prefill_input_embeds" not in captured["infra_kwargs"]
+    assert records["attest_calls"] == []
+    assert records["init_graph_calls"] == []
 
 
 def test_higgs_tts_engine_lifecycle_callbacks_require_model() -> None:

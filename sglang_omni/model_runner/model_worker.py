@@ -109,11 +109,6 @@ class ModelWorker:
         if self.model_arch_override is not None:
             self._apply_arch_override(self.model_config, self.model_arch_override)
 
-        if self.enable_prefill_input_embeds:
-            # Flipped after ServerArgs ran its multimodal gates: seen there,
-            # the flag would disable breakable prefill and chunked prefill.
-            self.model_config.is_multimodal = True
-
     @staticmethod
     def _apply_arch_override(model_config: ModelConfig, arch: str) -> None:
         """Override model config for a sub-model architecture."""

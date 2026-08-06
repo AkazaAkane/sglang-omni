@@ -93,6 +93,12 @@ def create_sglang_infrastructure(
     model_runner.alloc_memory_pool()
     model_runner.init_attention_backends()
 
+    if model_worker.enable_prefill_input_embeds:
+        # The attention backends above cache is_multimodal at construction
+        # and must keep the model's real semantics; only the prefill graph
+        # runner reads the flag from here, to register its input_embeds slot.
+        model_worker.model_config.is_multimodal = True
+
     if not defer_cuda_graph_capture:
         # This is required even when graphs are disabled: SGLang installs
         # the eager phase runner from init_cuda_graphs().
