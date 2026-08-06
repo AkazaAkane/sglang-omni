@@ -11,6 +11,8 @@ import pytest
 
 from sglang_omni.models.model_capabilities import (
     ModelCapabilities,
+    PrefillCudaGraphBackendCapability,
+    PrefillCudaGraphCapability,
     get_model_capabilities,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -113,10 +115,14 @@ def test_required_model_capability_configs_resolve_capabilities() -> None:
 
 
 def test_model_capabilities_are_frozen_and_explicit() -> None:
-    for field in fields(ModelCapabilities):
+    boolean_fields = fields(ModelCapabilities)[:-1]
+    for field in boolean_fields:
         assert field.type in (bool, "bool")
         assert field.default is MISSING
         assert field.default_factory is MISSING
+    prefill_field = fields(ModelCapabilities)[-1]
+    assert prefill_field.name == "prefill_cuda_graph"
+    assert prefill_field.default is None
 
     with pytest.raises(TypeError):
         ModelCapabilities()
@@ -126,6 +132,166 @@ def test_model_capabilities_are_frozen_and_explicit() -> None:
         capabilities.supports_reference_audio = False
 
 
+def _capabilities_with_prefill(
+    capability: PrefillCudaGraphCapability,
+) -> ModelCapabilities:
+    return ModelCapabilities(
+        supports_reference_audio=False,
+        supports_batch_vocoder=False,
+        supports_streaming_vocoder=False,
+        supports_cuda_graph=False,
+        supports_torch_compile=False,
+        prefill_cuda_graph=capability,
+    )
+
+
+def test_existing_declarations_do_not_require_prefill_cuda_graph() -> None:
+    assert all(
+        capabilities.prefill_cuda_graph is None
+        for capabilities in EXPECTED_TTS_CAPABILITIES.values()
+    )
+
+
+@pytest.mark.parametrize("integration", ["direct", "adapter"])
+def test_model_capabilities_accept_prefill_cuda_graph_integration(
+    integration: str,
+) -> None:
+    backend = PrefillCudaGraphBackendCapability(
+        backend="breakable",
+        status="validated",
+        default_buckets=(32, 64),
+    )
+
+    capabilities = _capabilities_with_prefill(
+        PrefillCudaGraphCapability(
+            integration=integration,
+            backends=(backend,),
+            preferred_backend="breakable",
+        )
+    )
+
+    assert capabilities.prefill_cuda_graph is not None
+    assert capabilities.prefill_cuda_graph.integration == integration
+
+
+@pytest.mark.parametrize("integration", ["direct", "adapter"])
+def test_prefill_cuda_graph_integration_does_not_require_backends(
+    integration: str,
+) -> None:
+    capabilities = _capabilities_with_prefill(
+        PrefillCudaGraphCapability(integration=integration)
+    )
+
+    assert capabilities.prefill_cuda_graph is not None
+    assert capabilities.prefill_cuda_graph.backends == ()
+
+
+def test_model_capabilities_accept_incompatible_prefill_cuda_graph() -> None:
+    capabilities = _capabilities_with_prefill(
+        PrefillCudaGraphCapability(
+            integration="incompatible",
+            incompatible_reason="model forward is not graph compatible",
+        )
+    )
+
+    assert capabilities.prefill_cuda_graph is not None
+    assert capabilities.prefill_cuda_graph.incompatible_reason is not None
+
+
+def test_model_capabilities_reject_incompatible_without_reason() -> None:
+    with pytest.raises(ValueError, match="requires incompatible_reason"):
+        _capabilities_with_prefill(
+            PrefillCudaGraphCapability(integration="incompatible")
+        )
+
+
+def test_model_capabilities_reject_duplicate_prefill_backends() -> None:
+    backend = PrefillCudaGraphBackendCapability(
+        backend="breakable",
+        status="validated",
+        default_buckets=(32,),
+    )
+
+    with pytest.raises(ValueError, match="duplicate.*backend"):
+        _capabilities_with_prefill(
+            PrefillCudaGraphCapability(
+                integration="direct",
+                backends=(backend, backend),
+            )
+        )
+
+
+def test_model_capabilities_reject_invalid_preferred_backend() -> None:
+    with pytest.raises(ValueError, match="preferred.*present"):
+        _capabilities_with_prefill(
+            PrefillCudaGraphCapability(
+                integration="adapter",
+                preferred_backend="breakable",
+            )
+        )
+
+
+def test_model_capabilities_reject_blocked_backend_without_reason() -> None:
+    with pytest.raises(ValueError, match="blocked.*requires a reason"):
+        _capabilities_with_prefill(
+            PrefillCudaGraphCapability(
+                integration="direct",
+                backends=(
+                    PrefillCudaGraphBackendCapability(
+                        backend="full",
+                        status="blocked",
+                    ),
+                ),
+            )
+        )
+
+
+def test_model_capabilities_reject_incompatible_backend_declarations() -> None:
+    with pytest.raises(ValueError, match="incompatible.*cannot declare backends"):
+        _capabilities_with_prefill(
+            PrefillCudaGraphCapability(
+                integration="incompatible",
+                incompatible_reason="unsupported forward",
+                backends=(
+                    PrefillCudaGraphBackendCapability(
+                        backend="full",
+                        status="validated",
+                        default_buckets=(32,),
+                    ),
+                ),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("buckets", "error"),
+    [
+        ((), "must not be empty"),
+        ((0,), "positive"),
+        ((32, 16), "strictly increasing"),
+        ((32, 32), "unique"),
+        ((32, 64.0), "integers"),
+    ],
+)
+def test_model_capabilities_reject_invalid_default_buckets(
+    buckets: tuple[int, ...],
+    error: str,
+) -> None:
+    with pytest.raises(ValueError, match=error):
+        _capabilities_with_prefill(
+            PrefillCudaGraphCapability(
+                integration="direct",
+                backends=(
+                    PrefillCudaGraphBackendCapability(
+                        backend="breakable",
+                        status="validated",
+                        default_buckets=buckets,
+                    ),
+                ),
+            )
+        )
+
+
 @pytest.mark.parametrize("architecture", EXPECTED_TTS_CAPABILITIES)
 def test_tts_model_package_exports_capabilities(architecture: str) -> None:
     module = _package_for_architecture(architecture)
@@ -133,8 +299,9 @@ def test_tts_model_package_exports_capabilities(architecture: str) -> None:
 
     assert capabilities == EXPECTED_TTS_CAPABILITIES[architecture]
     assert isinstance(capabilities, ModelCapabilities)
-    for field in fields(ModelCapabilities):
+    for field in fields(ModelCapabilities)[:-1]:
         assert isinstance(getattr(capabilities, field.name), bool)
+    assert capabilities.prefill_cuda_graph is None
 
 
 @pytest.mark.parametrize("architecture", EXPECTED_TTS_CAPABILITIES)

@@ -3,14 +3,28 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
+from sglang_omni.models.model_capabilities import (
+    PrefillCudaGraphCapability,
+    get_model_capabilities,
+)
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
+from sglang_omni.scheduling.prefill_cuda_graph_policy import (
+    ResolvedPrefillCudaGraphPolicy,
+    prefill_cuda_graph_server_args,
+    resolve_prefill_cuda_graph_policy,
+)
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+
+logger = logging.getLogger(__name__)
+
+_MISSING = object()
 
 
 class SGLangGenerationEngineBuilder(ABC):
@@ -25,6 +39,10 @@ class SGLangGenerationEngineBuilder(ABC):
     model_name: str
     context_length: int
     model_arch_override: str | None = None
+    prefill_cuda_graph_backend: str | None = None
+    prefill_cuda_graph_buckets: list[int] | tuple[int, ...] | None = None
+    allow_experimental_prefill_cuda_graph = False
+    allow_performance_unproven_prefill_cuda_graph = False
 
     def build(
         self,
@@ -54,6 +72,12 @@ class SGLangGenerationEngineBuilder(ABC):
             **self.generation_defaults(dtype=dtype),
         )
         self.adjust_overrides(overrides)
+        prefill_policy = self._resolve_prefill_cuda_graph_policy(
+            overrides=overrides,
+            server_args_overrides=server_args_overrides,
+        )
+        overrides.update(prefill_cuda_graph_server_args(prefill_policy))
+        self._log_prefill_cuda_graph_policy(prefill_policy)
 
         server_args = sglang_backend.build_sglang_server_args(
             checkpoint_dir,
@@ -134,6 +158,187 @@ class SGLangGenerationEngineBuilder(ABC):
         # The shared builder treats checkpoint resolution as a family policy.
         # Subclasses override this when they need a resolved local snapshot.
         return model_path
+
+    def prefill_cuda_graph_capability(self) -> PrefillCudaGraphCapability | None:
+        from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+
+        candidates = (
+            self.model_arch_override,
+            getattr(self, "architecture", None),
+        )
+        for architecture in candidates:
+            if not isinstance(architecture, str) or not architecture:
+                continue
+            capabilities = get_model_capabilities(architecture)
+            if capabilities is not None:
+                return capabilities.prefill_cuda_graph
+
+        model_package = ".".join(self.__class__.__module__.split(".")[:3])
+        package_architectures = {
+            config_cls.architecture
+            for config_cls in set(PIPELINE_CONFIG_REGISTRY.configs.values())
+            if ".".join(config_cls.__module__.split(".")[:3]) == model_package
+        }
+        if len(package_architectures) != 1:
+            return None
+        architecture = package_architectures.pop()
+        capabilities = get_model_capabilities(architecture)
+        if capabilities is None:
+            return None
+        return capabilities.prefill_cuda_graph
+
+    def prefill_cuda_graph_runtime_requirements(self) -> dict[str, bool]:
+        return {}
+
+    def _resolve_prefill_cuda_graph_policy(
+        self,
+        *,
+        overrides: dict[str, Any],
+        server_args_overrides: dict[str, Any] | None,
+    ) -> ResolvedPrefillCudaGraphPolicy:
+        incoming = dict(server_args_overrides or {})
+        merged_backend = _pop_prefill_value(
+            overrides,
+            "prefill backend",
+            "cuda_graph_backend_prefill",
+            "prefill_cuda_graph_backend",
+        )
+        override_backend = _get_prefill_value(
+            incoming,
+            "prefill backend",
+            "cuda_graph_backend_prefill",
+            "prefill_cuda_graph_backend",
+        )
+        stage_backend = self.prefill_cuda_graph_backend
+        if override_backend is not _MISSING:
+            if stage_backend is not None and stage_backend != override_backend:
+                raise ValueError(
+                    "Conflicting Prefill CUDA Graph backend settings: "
+                    f"builder={stage_backend!r}, server_args_overrides="
+                    f"{override_backend!r}"
+                )
+            requested_backend = override_backend
+        elif stage_backend is not None:
+            if merged_backend is not _MISSING and merged_backend != stage_backend:
+                raise ValueError(
+                    "Conflicting Prefill CUDA Graph backend settings: "
+                    f"builder={stage_backend!r}, stage={merged_backend!r}"
+                )
+            requested_backend = stage_backend
+        elif merged_backend is not _MISSING:
+            requested_backend = merged_backend
+        else:
+            requested_backend = "disabled"
+
+        merged_buckets = _pop_prefill_value(
+            overrides,
+            "prefill buckets",
+            "cuda_graph_bs_prefill",
+            "prefill_cuda_graph_buckets",
+        )
+        override_buckets = _get_prefill_value(
+            incoming,
+            "prefill buckets",
+            "cuda_graph_bs_prefill",
+            "prefill_cuda_graph_buckets",
+        )
+        stage_buckets = self.prefill_cuda_graph_buckets
+        if override_buckets is not _MISSING:
+            if stage_buckets is not None and tuple(stage_buckets) != tuple(
+                override_buckets
+            ):
+                raise ValueError(
+                    "Conflicting Prefill CUDA Graph bucket settings: "
+                    f"builder={stage_buckets!r}, server_args_overrides="
+                    f"{override_buckets!r}"
+                )
+            requested_buckets = override_buckets
+        elif stage_buckets is not None:
+            if merged_buckets is not _MISSING and tuple(merged_buckets) != tuple(
+                stage_buckets
+            ):
+                raise ValueError(
+                    "Conflicting Prefill CUDA Graph bucket settings: "
+                    f"builder={stage_buckets!r}, stage={merged_buckets!r}"
+                )
+            requested_buckets = stage_buckets
+        elif merged_buckets is not _MISSING:
+            requested_buckets = merged_buckets
+        else:
+            requested_buckets = None
+
+        allow_experimental = _pop_policy_flag(
+            overrides,
+            incoming,
+            "allow_experimental_prefill_cuda_graph",
+            self.allow_experimental_prefill_cuda_graph,
+        )
+        allow_performance_unproven = _pop_policy_flag(
+            overrides,
+            incoming,
+            "allow_performance_unproven_prefill_cuda_graph",
+            self.allow_performance_unproven_prefill_cuda_graph,
+        )
+        requested_max_bs = overrides.pop("cuda_graph_max_bs_prefill", _MISSING)
+
+        if requested_backend == "disabled" and requested_buckets is not None:
+            raise ValueError(
+                "Prefill CUDA Graph buckets cannot be set when the backend is disabled"
+            )
+        if requested_backend == "disabled" and requested_max_bs is not _MISSING:
+            raise ValueError(
+                "cuda_graph_max_bs_prefill cannot be set when the Prefill CUDA "
+                "Graph backend is disabled"
+            )
+
+        capability = (
+            None
+            if requested_backend == "disabled"
+            else self.prefill_cuda_graph_capability()
+        )
+        policy = resolve_prefill_cuda_graph_policy(
+            model_name=self.model_name,
+            capability=capability,
+            requested_backend=requested_backend,
+            requested_buckets=requested_buckets,
+            allow_experimental=allow_experimental,
+            allow_performance_unproven=allow_performance_unproven,
+            runtime_requirements=(
+                None
+                if requested_backend == "disabled"
+                else self.prefill_cuda_graph_runtime_requirements()
+            ),
+        )
+        if requested_max_bs is not _MISSING and requested_max_bs != max(policy.buckets):
+            raise ValueError(
+                "Conflicting Prefill CUDA Graph maximum bucket: "
+                f"cuda_graph_max_bs_prefill={requested_max_bs!r}, "
+                f"resolved maximum={max(policy.buckets)!r}"
+            )
+        return policy
+
+    def _log_prefill_cuda_graph_policy(
+        self,
+        policy: ResolvedPrefillCudaGraphPolicy,
+    ) -> None:
+        if not policy.enabled:
+            logger.info(
+                "Prefill CUDA Graph policy: model=%s requested=%s enabled=false",
+                self.model_name,
+                policy.requested_backend,
+            )
+            return
+        buckets = ",".join(str(bucket) for bucket in policy.buckets)
+        logger.info(
+            "Prefill CUDA Graph policy: model=%s requested=%s resolved=%s "
+            "integration=%s status=%s buckets=[%s]",
+            self.model_name,
+            policy.requested_backend,
+            policy.resolved_backend,
+            policy.integration,
+            policy.status,
+            buckets,
+        )
 
     @abstractmethod
     def generation_defaults(
@@ -289,6 +494,55 @@ class SGLangGenerationEngineBuilder(ABC):
 
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
         del scheduler, model_runner
+
+
+def _get_prefill_value(
+    values: dict[str, Any],
+    label: str,
+    *keys: str,
+) -> Any:
+    present = [(key, values[key]) for key in keys if key in values]
+    if not present:
+        return _MISSING
+    first_key, first_value = present[0]
+    for key, value in present[1:]:
+        if not _prefill_values_equal(first_value, value):
+            raise ValueError(
+                f"Conflicting {label} settings: "
+                f"{first_key}={first_value!r}, {key}={value!r}"
+            )
+    return first_value
+
+
+def _pop_prefill_value(
+    values: dict[str, Any],
+    label: str,
+    *keys: str,
+) -> Any:
+    value = _get_prefill_value(values, label, *keys)
+    for key in keys:
+        values.pop(key, None)
+    return value
+
+
+def _prefill_values_equal(left: Any, right: Any) -> bool:
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        return tuple(left) == tuple(right)
+    return left == right
+
+
+def _pop_policy_flag(
+    overrides: dict[str, Any],
+    incoming: dict[str, Any],
+    key: str,
+    default: bool,
+) -> bool:
+    value = overrides.pop(key, _MISSING)
+    if key in incoming:
+        return bool(incoming[key])
+    if value is not _MISSING:
+        return bool(value)
+    return bool(default)
 
 
 class AsrEngineBuilder(SGLangGenerationEngineBuilder):
