@@ -25,10 +25,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - uses: ./.github/actions/validate-omni-ci-cpu-partition
+      - id: validate-cpu-partition
+        continue-on-error: true
+        uses: ./.github/actions/validate-omni-ci-cpu-partition
 
       - name: Remove PR CI home
+        if: always()
         shell: bash
         run: |
           bash .github/scripts/cleanup_ci_pr_home.sh \
             "/data/omni-ci/pr-${{ github.event.pull_request.number }}"
+
+      - name: Enforce CPU partition validation
+        if: always() && steps.validate-cpu-partition.outcome == 'failure'
+        shell: bash
+        run: exit 1

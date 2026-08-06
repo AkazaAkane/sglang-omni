@@ -20,6 +20,7 @@ permissions:
   pull-requests: read
 
 env:
+  OMNI_CI_RESOURCE_CONTRACT_REQUIRED: "1"
   OMNI_CI_HOME: >-
     ${{ inputs.omni_ci_home != ''
         && inputs.omni_ci_home

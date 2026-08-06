@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.utils.ci_resource_contract import parse_cpu_list
+
 pytest_plugins = ["tests.utils"]
 
 if TYPE_CHECKING:
@@ -17,31 +19,11 @@ if TYPE_CHECKING:
     from tests.utils import ServerHandle
 
 
-def _parse_cpuset(spec: str) -> set[int]:
-    """Parse a Linux cpulist such as "0-23,64-87" into a CPU id set."""
-    cpus: set[int] = set()
-    for part in spec.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if "-" in part:
-            lo_text, hi_text = part.split("-", 1)
-            lo, hi = int(lo_text), int(hi_text)
-            if lo > hi:
-                raise ValueError(f"Invalid OMNI_CI_CPUSET range {part!r}")
-            cpus.update(range(lo, hi + 1))
-        else:
-            cpus.add(int(part))
-    if not cpus:
-        raise ValueError(f"OMNI_CI_CPUSET {spec!r} selects no CPUs")
-    return cpus
-
-
 def _apply_omni_ci_cpuset() -> set[int] | None:
     spec = os.environ.get("OMNI_CI_CPUSET", "").strip()
     if not spec or not hasattr(os, "sched_setaffinity"):
         return None
-    cpus = _parse_cpuset(spec)
+    cpus = parse_cpu_list(spec)
     os.sched_setaffinity(0, cpus)
     return cpus
 

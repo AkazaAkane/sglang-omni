@@ -7,30 +7,31 @@ import os
 
 import pytest
 
-from tests.test_model.conftest import _apply_omni_ci_cpuset, _parse_cpuset
+from tests.test_model.conftest import _apply_omni_ci_cpuset
+from tests.utils.ci_resource_contract import parse_cpu_list
 
 
 def test_parse_cpuset_ranges_and_singles():
-    assert _parse_cpuset("0-3,8,64-65") == {0, 1, 2, 3, 8, 64, 65}
+    assert parse_cpu_list("0-3,8,64-65") == {0, 1, 2, 3, 8, 64, 65}
 
 
 def test_parse_cpuset_single_cpu():
-    assert _parse_cpuset("7") == {7}
+    assert parse_cpu_list("7") == {7}
 
 
 def test_parse_cpuset_rejects_empty():
     with pytest.raises(ValueError):
-        _parse_cpuset(" , ")
+        parse_cpu_list(" , ")
 
 
 def test_parse_cpuset_rejects_inverted_range():
     with pytest.raises(ValueError):
-        _parse_cpuset("5-2")
+        parse_cpu_list("5-2")
 
 
 def test_parse_cpuset_rejects_garbage():
     with pytest.raises(ValueError):
-        _parse_cpuset("0-a")
+        parse_cpu_list("0-a")
 
 
 def test_apply_noop_without_env(monkeypatch):

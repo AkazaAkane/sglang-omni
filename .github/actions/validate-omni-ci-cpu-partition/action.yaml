@@ -7,6 +7,5 @@ runs:
     - name: Validate CPU partition contract
       shell: bash
       run: >-
-        PYTHONPATH="${GITHUB_WORKSPACE}"
         python3 .github/scripts/validate_omni_ci_cpu_partition.py
         --output /tmp/omni-ci-resource-contract.json
