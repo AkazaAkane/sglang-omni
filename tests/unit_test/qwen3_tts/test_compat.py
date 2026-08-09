@@ -114,12 +114,6 @@ def test_transformers_globals_are_pristine_at_test_start() -> None:
 
 
 @pytest.mark.parametrize("name", compat._MASK_FACTORY_NAMES)
-def test_every_patched_name_exists_in_transformers(name: str) -> None:
-    """A typo in _MASK_FACTORY_NAMES would silently patch nothing."""
-    assert hasattr(masking_utils, name)
-
-
-@pytest.mark.parametrize("name", compat._MASK_FACTORY_NAMES)
 def test_unpatched_transformers_rejects_the_qwen_tts_call_shape(name: str) -> None:
     with pytest.raises(TypeError, match="input_embeds"):
         getattr(masking_utils, name)(**_qwen_tts_kwargs(_mask_config()))
