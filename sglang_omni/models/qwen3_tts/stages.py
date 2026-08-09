@@ -31,10 +31,10 @@ logger = logging.getLogger(__name__)
 _QWEN_TTS_INSTALL_HINT = (
     "Qwen3-TTS support requires the official `qwen-tts` package:\n"
     "    apt-get update && apt-get install -y sox\n"
-    "    uv pip install sox einops\n"
+    "    uv pip install --no-deps sox einops\n"
     "    uv pip install --no-deps qwen-tts==0.1.1\n"
-    "`--no-deps` on the last line is required: qwen-tts pins Transformers 4.57.3, "
-    "which would replace the stack SGLang-Omni is built against. See "
+    "`--no-deps` is required on both lines: qwen-tts pins Transformers 4.57.3, "
+    "and resolving sox lifts numpy past the numba==0.65.1 ceiling. See "
     "docs/cookbook/qwen3_tts.md."
 )
 
