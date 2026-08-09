@@ -48,13 +48,6 @@ stack is therefore the supported configuration, not a workaround.
 If you hit a `TypeError` raised from inside `qwen_tts`, do not resolve it by
 installing the package's own Transformers pin — that breaks the rest of the
 runtime. Report it instead, so the shim can cover it.
-`tests/test_model/test_qwen3_tts_clean_install.py` reproduces this path by building
-exactly the environment above and serving one request through it. It needs a GPU,
-so run it explicitly:
-
-```bash
-pytest tests/test_model/test_qwen3_tts_clean_install.py -m benchmark -v -s
-```
 
 The Python `sox` package shells out to the system `sox` binary on some paths, so install both.
 
