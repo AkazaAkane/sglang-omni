@@ -18,14 +18,16 @@ in place:
 
 ```bash
 apt-get update && apt-get install -y sox
-uv pip install --no-deps sox einops
+uv pip install sox einops
 uv pip install --no-deps qwen-tts==0.1.1
 ```
 
-Use `--no-deps` on both lines. `onnxruntime` is already a SGLang-Omni dependency,
-and resolving these packages with their own dependency sets pulls `numpy` past the
-ceiling `numba==0.65.1` imposes (numba requires `numpy<=2.4`). The upgraded `numpy`
-then breaks `librosa`, and `import qwen_tts` fails before it ever serves a request.
+Only `qwen-tts` needs `--no-deps`: its Transformers 4.57.3 pin would replace the
+project's Transformers 5.12.1 installation. `sox` and `einops` resolve normally.
+
+Do not add `onnxruntime` to that line — it is already a SGLang-Omni dependency, and
+resolving it here pulls `numpy` past the ceiling `numba==0.65.1` imposes
+(numba requires `numpy<=2.4`), which breaks `librosa` and with it `import qwen_tts`.
 
 > Do **not** install `qwen-tts` with dependencies here. Its declared dependency
 > set can pull a different Transformers/Torch stack than the SGLang-Omni runtime.

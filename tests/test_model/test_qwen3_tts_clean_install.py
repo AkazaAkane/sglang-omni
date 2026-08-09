@@ -88,19 +88,9 @@ def clean_install_python(tmp_path_factory) -> Path:
         _run([str(python), "-m", "pip", "install", "--no-deps", *overrides])
 
     _run(["uv", "pip", "install", "--python", str(python), "--no-deps", "-e", "."])
-    # Note (Akazaakane): --no-deps, and no onnxruntime (already a pyproject dep)
-    # — an unconstrained resolve lifts numpy past the numba==0.65.1 ceiling.
-    _run(
-        [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            str(python),
-            "--no-deps",
-            *QWEN_TTS_EXTRA_DEPS,
-        ]
-    )
+    # Note (Akazaakane): no onnxruntime here (already a pyproject dep) — resolving
+    # it lifts numpy past the numba==0.65.1 ceiling and breaks librosa.
+    _run(["uv", "pip", "install", "--python", str(python), *QWEN_TTS_EXTRA_DEPS])
     _run(
         [
             "uv",

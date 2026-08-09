@@ -11,14 +11,11 @@ import torch
 
 _APPLY_LOCK = threading.Lock()
 _PATCHED_FLAG = "_sglang_omni_qwen_tts_compat_patched"
-# Note (Akazaakane): qwen-tts splats one mask_kwargs dict across the whole
-# family, so shimming create_causal_mask alone just moves the failure.
+# Note (Akazaakane): the factories qwen-tts 0.1.1 imports. It splats one
+# mask_kwargs dict into both, so shimming create_causal_mask alone just moves
+# the failure to the next line.
 _MASK_FACTORY_NAMES = (
-    "create_bidirectional_mask",
-    "create_bidirectional_sliding_window_mask",
     "create_causal_mask",
-    "create_chunked_causal_mask",
-    "create_masks_for_generate",
     "create_sliding_window_causal_mask",
 )
 

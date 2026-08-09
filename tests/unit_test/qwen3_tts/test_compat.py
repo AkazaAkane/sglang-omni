@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 import torch
 from transformers import masking_utils
+from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.models.llama.configuration_llama import LlamaConfig
+from transformers.utils import generic
 
 # Note (Akazaakane): loaded by path so the module under test never imports sglang.
 _COMPAT_PATH = (
@@ -22,20 +24,28 @@ _SPEC.loader.exec_module(compat)
 
 # Note (Akazaakane): must be captured before any test applies the patch.
 _PRISTINE = {name: getattr(masking_utils, name) for name in compat._MASK_FACTORY_NAMES}
-# Note (Akazaakane): the factories qwen-tts splats mask_kwargs into, per the
-# Qwen3TTSTokenizerV2 decoder forward.
-_SHIMMED_FACTORIES = (
-    "create_causal_mask",
-    "create_sliding_window_causal_mask",
-    "create_chunked_causal_mask",
-)
 
 
-@pytest.fixture
-def pristine_masking_utils(monkeypatch: pytest.MonkeyPatch):
-    for name, original in _PRISTINE.items():
-        monkeypatch.setattr(masking_utils, name, original)
-    return masking_utils
+@pytest.fixture(autouse=True)
+def restore_transformers_globals():
+    """Undo every global ``apply_...()`` touches, so tests cannot leak into
+    the rest of the pytest process."""
+    saved_masks = {
+        name: getattr(masking_utils, name) for name in compat._MASK_FACTORY_NAMES
+    }
+    saved_check_model_inputs = generic.check_model_inputs
+    saved_rope = ROPE_INIT_FUNCTIONS.get("default")
+    rope_was_set = "default" in ROPE_INIT_FUNCTIONS
+    try:
+        yield
+    finally:
+        for name, original in saved_masks.items():
+            setattr(masking_utils, name, original)
+        generic.check_model_inputs = saved_check_model_inputs
+        if rope_was_set:
+            ROPE_INIT_FUNCTIONS["default"] = saved_rope
+        else:
+            ROPE_INIT_FUNCTIONS.pop("default", None)
 
 
 def _mask_config() -> LlamaConfig:
@@ -44,7 +54,6 @@ def _mask_config() -> LlamaConfig:
     )
     config._attn_implementation = "eager"
     config.sliding_window = 2
-    config.attention_chunk_size = 2
     return config
 
 
@@ -67,45 +76,46 @@ def _supported_kwargs(config: LlamaConfig) -> dict:
     }
 
 
-@pytest.mark.parametrize("name", _SHIMMED_FACTORIES)
-def test_unpatched_transformers_rejects_the_qwen_tts_call_shape(
-    pristine_masking_utils, name: str
-) -> None:
+def test_transformers_globals_are_pristine_at_test_start() -> None:
+    """Canary for patch leakage between tests in one pytest process."""
+    for name, original in _PRISTINE.items():
+        assert getattr(masking_utils, name) is original
+    assert not getattr(generic.check_model_inputs, compat._PATCHED_FLAG, False)
+
+
+@pytest.mark.parametrize("name", compat._MASK_FACTORY_NAMES)
+def test_unpatched_transformers_rejects_the_qwen_tts_call_shape(name: str) -> None:
     with pytest.raises(TypeError, match="input_embeds"):
-        getattr(pristine_masking_utils, name)(**_qwen_tts_kwargs(_mask_config()))
+        getattr(masking_utils, name)(**_qwen_tts_kwargs(_mask_config()))
 
 
-@pytest.mark.parametrize("name", _SHIMMED_FACTORIES)
-def test_shim_accepts_input_embeds_and_absorbs_cache_position(
-    pristine_masking_utils, name: str
-) -> None:
+@pytest.mark.parametrize("name", compat._MASK_FACTORY_NAMES)
+def test_shim_accepts_input_embeds_and_absorbs_cache_position(name: str) -> None:
     config = _mask_config()
     compat.apply_qwen_tts_transformers_compatibility_patches()
 
-    shimmed = getattr(pristine_masking_utils, name)(**_qwen_tts_kwargs(config))
+    shimmed = getattr(masking_utils, name)(**_qwen_tts_kwargs(config))
     expected = _PRISTINE[name](**_supported_kwargs(config))
 
     assert shimmed is not None
     torch.testing.assert_close(shimmed, expected)
 
 
-@pytest.mark.parametrize("name", _SHIMMED_FACTORIES)
-def test_shim_passes_the_supported_call_shape_through(
-    pristine_masking_utils, name: str
-) -> None:
+@pytest.mark.parametrize("name", compat._MASK_FACTORY_NAMES)
+def test_shim_passes_the_supported_call_shape_through(name: str) -> None:
     config = _mask_config()
     compat.apply_qwen_tts_transformers_compatibility_patches()
 
     torch.testing.assert_close(
-        getattr(pristine_masking_utils, name)(**_supported_kwargs(config)),
+        getattr(masking_utils, name)(**_supported_kwargs(config)),
         _PRISTINE[name](**_supported_kwargs(config)),
     )
 
 
-def test_shim_is_idempotent(pristine_masking_utils) -> None:
+def test_shim_is_idempotent() -> None:
     compat.apply_qwen_tts_transformers_compatibility_patches()
     patched = {
-        name: getattr(pristine_masking_utils, name) for name in _SHIMMED_FACTORIES
+        name: getattr(masking_utils, name) for name in compat._MASK_FACTORY_NAMES
     }
     for name, fn in patched.items():
         assert fn is not _PRISTINE[name]
@@ -113,7 +123,7 @@ def test_shim_is_idempotent(pristine_masking_utils) -> None:
     compat.apply_qwen_tts_transformers_compatibility_patches()
 
     for name, fn in patched.items():
-        assert getattr(pristine_masking_utils, name) is fn
+        assert getattr(masking_utils, name) is fn
 
 
 def test_shim_is_a_no_op_when_transformers_already_accepts_input_embeds(
