@@ -20,6 +20,14 @@ OBSERVATION_ROOT = Path("/data/omni-ci/observations")
 RETENTION_DAYS = 30
 _RESULT_NAMES = {"results.json", "benchmark.wall_time.json", "manifest.json"}
 _CONTENTION_PREFIX = "[cpuset-contention]"
+_CONTENTION_STATS_RE = re.compile(
+    r"cpuset=(?P<cpuset>\S+) windows=(?P<windows>\d+) "
+    r"foreign-cores mean=(?P<mean>\d+(?:\.\d+)?) "
+    r"max=(?P<peak>\d+(?:\.\d+)?) errors=(?P<errors>\d+)"
+)
+_CONTENTION_EMPTY_RE = re.compile(
+    r"cpuset=(?P<cpuset>\S+) no completed sample windows " r"\(errors=(?P<errors>\d+)\)"
+)
 
 
 def _slug(value: str, fallback: str) -> str:
@@ -151,16 +159,76 @@ def _collect_results(started_epoch: float) -> list[dict[str, Any]]:
     return sorted(results, key=lambda item: item["path"])
 
 
-def _collect_contention(log_file: str) -> list[str]:
+def _compact_cpuset(spec: str) -> str:
+    try:
+        cpus = sorted({int(cpu) for cpu in spec.split(",")})
+    except ValueError:
+        return spec
+    ranges: list[str] = []
+    start = previous = cpus[0]
+    for cpu in cpus[1:]:
+        if cpu == previous + 1:
+            previous = cpu
+            continue
+        ranges.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = cpu
+    ranges.append(str(start) if start == previous else f"{start}-{previous}")
+    return ",".join(ranges)
+
+
+def _collect_contention(log_file: str) -> dict[str, Any] | None:
     if not log_file:
-        return []
+        return None
     try:
         with open(log_file, encoding="utf-8", errors="replace") as log:
-            return [
-                line.rstrip() for line in log if line.startswith(_CONTENTION_PREFIX)
+            lines = [
+                line.split(_CONTENTION_PREFIX, 1)[1].strip()
+                for line in log
+                if _CONTENTION_PREFIX in line
             ]
     except OSError:
-        return []
+        return None
+
+    contention: dict[str, Any] | None = None
+    warnings: list[str] = []
+    for line in lines:
+        stats = _CONTENTION_STATS_RE.fullmatch(line)
+        if stats:
+            contention = {
+                "cpuset": _compact_cpuset(stats.group("cpuset")),
+                "windows": int(stats.group("windows")),
+                "foreign_cores_mean": float(stats.group("mean")),
+                "foreign_cores_peak": float(stats.group("peak")),
+                "errors": int(stats.group("errors")),
+            }
+            continue
+        empty = _CONTENTION_EMPTY_RE.fullmatch(line)
+        if empty:
+            contention = {
+                "cpuset": _compact_cpuset(empty.group("cpuset")),
+                "windows": 0,
+                "foreign_cores_mean": None,
+                "foreign_cores_peak": None,
+                "errors": int(empty.group("errors")),
+            }
+            continue
+        if line.startswith("WARNING: "):
+            warning = line.removeprefix("WARNING: ").partition(";")[0]
+            if warning not in warnings:
+                warnings.append(warning)
+
+    if contention is None and not warnings:
+        return None
+    if contention is None:
+        contention = {
+            "cpuset": None,
+            "windows": None,
+            "foreign_cores_mean": None,
+            "foreign_cores_peak": None,
+            "errors": None,
+        }
+    contention["warnings"] = warnings
+    return contention
 
 
 def _attempt(args: argparse.Namespace) -> None:
