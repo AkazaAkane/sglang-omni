@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""Persist immutable, best-effort Omni CI observation records."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import socket
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+SCHEMA_VERSION = 1
+OBSERVATION_ROOT = Path("/data/omni-ci/observations")
+RETENTION_DAYS = 30
+_RESULT_NAMES = {"results.json", "benchmark.wall_time.json", "manifest.json"}
+_CONTENTION_PREFIX = "[cpuset-contention]"
+
+
+def _slug(value: str, fallback: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
+    return slug or fallback
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _duration_seconds(started_at: str, finished_at: str) -> float | None:
+    try:
+        start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        finish = datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0.0, round((finish - start).total_seconds(), 3))
+
+
+def _metadata(stage_label: str) -> dict[str, Any]:
+    env = os.environ
+    return {
+        "run": {
+            "repository": env.get("GITHUB_REPOSITORY"),
+            "workflow": env.get("GITHUB_WORKFLOW"),
+            "event_name": env.get("GITHUB_EVENT_NAME"),
+            "run_id": env.get("GITHUB_RUN_ID"),
+            "run_number": env.get("GITHUB_RUN_NUMBER"),
+            "run_attempt": env.get("GITHUB_RUN_ATTEMPT"),
+            "server_url": env.get("GITHUB_SERVER_URL"),
+            "actor": env.get("GITHUB_ACTOR"),
+            "workflow_ref": env.get("GITHUB_WORKFLOW_REF"),
+        },
+        "job": {
+            "id": env.get("GITHUB_JOB"),
+            "runner_name": env.get("RUNNER_NAME"),
+            "runner_os": env.get("RUNNER_OS"),
+            "runner_arch": env.get("RUNNER_ARCH"),
+        },
+        "stage": {"label": stage_label},
+        "commit": {
+            "sha": env.get("GITHUB_SHA"),
+            "ref": env.get("GITHUB_REF"),
+            "head_ref": env.get("GITHUB_HEAD_REF"),
+            "base_ref": env.get("GITHUB_BASE_REF"),
+        },
+        "environment": {
+            "hostname": socket.gethostname(),
+            "cpu_set": env.get("OMNI_CI_CPUSET"),
+            "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
+            "nvidia_visible_devices": env.get("NVIDIA_VISIBLE_DEVICES"),
+            "python": env.get("OMNI_CI_PYTHON"),
+        },
+    }
+
+
+def _record_directory(stage_label: str) -> Path | None:
+    env = os.environ
+    run_id = env.get("GITHUB_RUN_ID")
+    if env.get("GITHUB_ACTIONS") != "true" or not run_id:
+        return None
+    run_id = _slug(run_id, "unknown-run")
+    repository = _slug(env.get("GITHUB_REPOSITORY", "unknown"), "unknown")
+    run_attempt = _slug(env.get("GITHUB_RUN_ATTEMPT", "1"), "1")
+    job = _slug(env.get("GITHUB_JOB", "unknown-job"), "unknown-job")
+    stage = _slug(stage_label, "unknown-stage")
+    return (
+        OBSERVATION_ROOT
+        / f"v{SCHEMA_VERSION}"
+        / repository
+        / run_id
+        / run_attempt
+        / job
+        / stage
+    )
+
+
+def _write_immutable(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        with temporary.open("x", encoding="utf-8") as output:
+            json.dump(payload, output, indent=2, sort_keys=True, ensure_ascii=False)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            pass
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _result_roots() -> list[Path]:
+    roots = [Path("/tmp")]
+    for name, value in os.environ.items():
+        if name.endswith("_OUTPUT_ROOT") and value:
+            roots.append(Path(value))
+    return roots
+
+
+def _is_result_file(name: str) -> bool:
+    return name.endswith("_results.json") or name in _RESULT_NAMES
+
+
+def _collect_results(started_epoch: float) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for root in _result_roots():
+        if not root.is_dir():
+            continue
+        for directory, _, filenames in os.walk(root):
+            for filename in filenames:
+                if not _is_result_file(filename):
+                    continue
+                path = Path(directory) / filename
+                try:
+                    resolved = path.resolve()
+                    if resolved in seen or path.stat().st_mtime < started_epoch:
+                        continue
+                    with path.open(encoding="utf-8") as result_file:
+                        payload = json.load(result_file)
+                except (OSError, ValueError):
+                    continue
+                seen.add(resolved)
+                results.append({"path": str(path), "payload": payload})
+    return sorted(results, key=lambda item: item["path"])
+
+
+def _collect_contention(log_file: str) -> list[str]:
+    if not log_file:
+        return []
+    try:
+        with open(log_file, encoding="utf-8", errors="replace") as log:
+            return [
+                line.rstrip() for line in log if line.startswith(_CONTENTION_PREFIX)
+            ]
+    except OSError:
+        return []
+
+
+def _attempt(args: argparse.Namespace) -> None:
+    directory = _record_directory(args.stage_label)
+    if directory is None:
+        return
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "record_type": "stage_attempt",
+        "recorded_at": _utc_now(),
+        **_metadata(args.stage_label),
+        "attempt": {
+            "number": args.attempt,
+            "max_attempts": args.max_attempts,
+            "started_at": args.started_at,
+            "finished_at": args.finished_at,
+            "duration_seconds": _duration_seconds(args.started_at, args.finished_at),
+            "exit_code": args.exit_code,
+        },
+        "cpu_contention": _collect_contention(args.log_file),
+        "benchmark_results": _collect_results(args.started_epoch),
+    }
+    _write_immutable(directory / f"attempt-{args.attempt}.json", payload)
+
+
+def _wrapper_terminal(args: argparse.Namespace) -> None:
+    directory = _record_directory(args.stage_label)
+    if directory is None:
+        return
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "record_type": "wrapper_terminal",
+        "recorded_at": _utc_now(),
+        **_metadata(args.stage_label),
+        "wrapper": {
+            "started_at": args.started_at,
+            "finished_at": args.finished_at,
+            "duration_seconds": _duration_seconds(args.started_at, args.finished_at),
+            "exit_code": args.exit_code,
+            "attempts_completed": args.attempts_completed,
+        },
+    }
+    _write_immutable(directory / "wrapper-terminal.json", payload)
+
+
+def _current_attempt_records(stage_label: str) -> list[dict[str, Any]]:
+    directory = _record_directory(stage_label)
+    if directory is None:
+        return []
+    records = []
+    for path in directory.glob("attempt-*.json"):
+        try:
+            with path.open(encoding="utf-8") as record_file:
+                record = json.load(record_file)
+        except (OSError, json.JSONDecodeError):
+            continue
+        record["_path"] = str(path)
+        records.append(record)
+    return sorted(
+        records, key=lambda record: record.get("attempt", {}).get("number", 0)
+    )
+
+
+def _append_summary(stage_label: str, records: list[dict[str, Any]]) -> None:
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    lines = [f"### Omni CI observation: {stage_label}", ""]
+    if not records:
+        lines.append("No completed retry attempts were observed.")
+    else:
+        lines.extend(
+            [
+                "| Attempt | Exit code | Duration | Result JSON files |",
+                "| ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for record in records:
+            attempt = record.get("attempt", {})
+            duration = attempt.get("duration_seconds")
+            duration_text = (
+                f"{duration:.1f}s" if isinstance(duration, (int, float)) else "unknown"
+            )
+            lines.append(
+                f"| {attempt.get('number', 'unknown')} | "
+                f"{attempt.get('exit_code', 'unknown')} | {duration_text} | "
+                f"{len(record.get('benchmark_results', []))} |"
+            )
+        lines.extend(
+            ["", f"Records: `{records[0]['_path']}` and sibling attempt files."]
+        )
+    with open(summary_path, "a", encoding="utf-8") as summary:
+        summary.write("\n".join(lines) + "\n")
+
+
+def _garbage_collect() -> None:
+    if not OBSERVATION_ROOT.is_dir():
+        return
+    cutoff = time.time() - RETENTION_DAYS * 24 * 60 * 60
+    for path in OBSERVATION_ROOT.rglob("*"):
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            continue
+    directories = sorted(
+        (path for path in OBSERVATION_ROOT.rglob("*") if path.is_dir()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    )
+    for directory in directories:
+        try:
+            if directory.stat().st_mtime < cutoff:
+                directory.rmdir()
+        except OSError:
+            continue
+
+
+def _post_stage(args: argparse.Namespace) -> None:
+    records = _current_attempt_records(args.stage_label)
+    _append_summary(args.display_label, records)
+    _garbage_collect()
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    attempt = subparsers.add_parser("attempt")
+    attempt.add_argument("--stage-label", required=True)
+    attempt.add_argument("--attempt", type=int, required=True)
+    attempt.add_argument("--max-attempts", type=int, required=True)
+    attempt.add_argument("--started-at", required=True)
+    attempt.add_argument("--started-epoch", type=float, required=True)
+    attempt.add_argument("--finished-at", required=True)
+    attempt.add_argument("--exit-code", type=int, required=True)
+    attempt.add_argument("--log-file", default="")
+    attempt.set_defaults(handler=_attempt)
+
+    terminal = subparsers.add_parser("wrapper-terminal")
+    terminal.add_argument("--stage-label", required=True)
+    terminal.add_argument("--started-at", required=True)
+    terminal.add_argument("--finished-at", required=True)
+    terminal.add_argument("--exit-code", type=int, required=True)
+    terminal.add_argument("--attempts-completed", type=int, required=True)
+    terminal.set_defaults(handler=_wrapper_terminal)
+
+    post_stage = subparsers.add_parser("post-stage")
+    post_stage.add_argument("--stage-label", required=True)
+    post_stage.add_argument("--display-label", required=True)
+    post_stage.set_defaults(handler=_post_stage)
+    return parser
+
+
+def main() -> None:
+    args = _parser().parse_args()
+    args.handler(args)
+
+
+if __name__ == "__main__":
+    main()
