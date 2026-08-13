@@ -28,6 +28,41 @@ _CONTENTION_STATS_RE = re.compile(
 _CONTENTION_EMPTY_RE = re.compile(
     r"cpuset=(?P<cpuset>\S+) no completed sample windows " r"\(errors=(?P<errors>\d+)\)"
 )
+_BENCHMARK_CONTAINER_KEYS = ("summary", "speed", "metrics", "overall")
+_BENCHMARK_METRICS = {
+    "throughput": (
+        ("throughput", None),
+        ("throughput_qps", None),
+        ("throughput_samples_per_s", None),
+        ("achieved_rps", None),
+    ),
+    "latency_mean": (
+        ("latency_mean", None),
+        ("latency_mean_s", None),
+        ("latency_s", "mean"),
+    ),
+    "latency_p95": (
+        ("latency_p95", None),
+        ("latency_p95_s", None),
+        ("latency_s", "p95"),
+    ),
+    "rtf": (("rtf_mean", None), ("rtf", "mean"), ("rtf", None)),
+    "wer": (("wer_corpus", None), ("corpus_wer", None), ("wer", None)),
+    "success": (
+        ("success", None),
+        ("succeeded", None),
+        ("successful_request_count", None),
+        ("completed_requests", None),
+        ("successful_samples", None),
+        ("evaluated", None),
+        ("passed", None),
+    ),
+    "failed": (
+        ("failed", None),
+        ("failed_requests", None),
+        ("failed_samples", None),
+    ),
+}
 
 
 def _slug(value: str, fallback: str) -> str:
@@ -135,6 +170,45 @@ def _is_result_file(name: str) -> bool:
     return name.endswith("_results.json") or name in _RESULT_NAMES
 
 
+def _benchmark_containers(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    containers: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def visit(container: dict[str, Any]) -> None:
+        if id(container) in seen:
+            return
+        seen.add(id(container))
+        containers.append(container)
+        for key in _BENCHMARK_CONTAINER_KEYS:
+            nested = container.get(key)
+            if isinstance(nested, dict):
+                visit(nested)
+
+    visit(payload)
+    return containers
+
+
+def _benchmark_summary(payload: Any) -> dict[str, bool | int | float]:
+    if not isinstance(payload, dict):
+        return {}
+    containers = _benchmark_containers(payload)
+    summary: dict[str, bool | int | float] = {}
+    for output_key, selectors in _BENCHMARK_METRICS.items():
+        for source_key, statistic in selectors:
+            found = False
+            for container in containers:
+                value = container.get(source_key)
+                if statistic is not None and isinstance(value, dict):
+                    value = value.get(statistic)
+                if isinstance(value, (bool, int, float)):
+                    summary[output_key] = value
+                    found = True
+                    break
+            if found:
+                break
+    return summary
+
+
 def _collect_results(started_epoch: float) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     seen: set[Path] = set()
@@ -155,7 +229,9 @@ def _collect_results(started_epoch: float) -> list[dict[str, Any]]:
                 except (OSError, ValueError):
                     continue
                 seen.add(resolved)
-                results.append({"path": str(path), "payload": payload})
+                summary = _benchmark_summary(payload)
+                if summary:
+                    results.append({"path": str(path), **summary})
     return sorted(results, key=lambda item: item["path"])
 
 
@@ -302,7 +378,7 @@ def _append_summary(stage_label: str, records: list[dict[str, Any]]) -> None:
     else:
         lines.extend(
             [
-                "| Attempt | Exit code | Duration | Result JSON files |",
+                "| Attempt | Exit code | Duration | Benchmark summaries |",
                 "| ---: | ---: | ---: | ---: |",
             ]
         )
