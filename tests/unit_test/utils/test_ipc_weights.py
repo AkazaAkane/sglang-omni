@@ -13,10 +13,8 @@ from __future__ import annotations
 
 import os
 import pickle
-import sys
 import threading
 import time
-from types import ModuleType
 
 import pytest
 import torch
@@ -29,7 +27,6 @@ from sglang_omni.utils.ipc_weights import (
     export_weights,
     get_weight_share_config,
     handle_file_for_model,
-    prepare_weight_share_process_compat,
     verify_attachment,
 )
 
@@ -738,32 +735,3 @@ def test_get_weight_share_config_parsing():
                 "SGLANG_OMNI_WEIGHT_SHARE_TIMEOUT_S": "-1",
             }
         )
-
-
-@pytest.mark.parametrize("role", ["leader", "follower"])
-def test_prepare_weight_share_process_compat_patches_enabled_processes(
-    monkeypatch, role
-):
-    calls = []
-    patch_torch = ModuleType("sglang.srt.utils.patch_torch")
-    patch_torch.monkey_patch_torch_reductions = lambda: calls.append(None)
-    monkeypatch.setitem(sys.modules, patch_torch.__name__, patch_torch)
-    monkeypatch.setenv("SGLANG_OMNI_WEIGHT_SHARE", f"{role}:/x")
-
-    prepare_weight_share_process_compat()
-    prepare_weight_share_process_compat()
-
-    assert calls == [None, None]
-
-
-def test_prepare_weight_share_process_compat_leaves_disabled_process_unpatched(
-    monkeypatch,
-):
-    patch_torch = ModuleType("sglang.srt.utils.patch_torch")
-    patch_torch.monkey_patch_torch_reductions = lambda: pytest.fail(
-        "disabled weight sharing must not patch torch reductions"
-    )
-    monkeypatch.setitem(sys.modules, patch_torch.__name__, patch_torch)
-    monkeypatch.delenv("SGLANG_OMNI_WEIGHT_SHARE", raising=False)
-
-    prepare_weight_share_process_compat()

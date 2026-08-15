@@ -10,7 +10,6 @@ regression would read the pre-mutation values and fail here.
 from __future__ import annotations
 
 import multiprocessing as mp
-import os
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +18,11 @@ import torch
 from torch import nn
 
 from sglang_omni.comm import stage_io
+from sglang_omni.pipeline.stage_workers import (
+    StageLaunchConfig,
+    StageWorkerProcessSpec,
+    stage_process_main,
+)
 from sglang_omni.utils import ipc_weights
 
 pytestmark = pytest.mark.skipif(
@@ -41,32 +45,48 @@ def _handle(store_dir: Path) -> str:
 
 
 def _direct_ipc_producer(data_queue: Any, done: Any) -> None:
-    os.environ[ipc_weights.ENV_WEIGHT_SHARE] = "leader:/unused"
+    from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
+
     torch.cuda.set_device(0)
-    ipc_weights.prepare_weight_share_process_compat()
+    monkey_patch_torch_reductions()
     tensor = torch.arange(8, dtype=torch.float32, device="cuda")
     data_queue.put(stage_io.serialize_direct_cuda_ipc_stream_chunk(tensor, None))
     _wait(done, "direct CUDA IPC consumer")
 
 
-def _direct_ipc_consumer(data_queue: Any, done: Any) -> None:
-    os.environ[ipc_weights.ENV_WEIGHT_SHARE] = "follower:/unused"
+def _direct_ipc_consumer_factory(data_queue: Any, done: Any) -> None:
     torch.cuda.set_device(0)
-    ipc_weights.prepare_weight_share_process_compat()
     ref = data_queue.get(timeout=60)
     tensor, metadata = stage_io.deserialize_direct_cuda_ipc_stream_chunk(ref)
     assert torch.equal(tensor, torch.arange(8, dtype=torch.float32, device="cuda"))
     assert metadata is None
     done.set()
+    raise SystemExit(0)
 
 
-def test_weight_share_reductions_are_symmetric_for_direct_cuda_ipc() -> None:
+def test_weight_share_stage_bootstrap_supports_direct_cuda_ipc(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, "follower:/unused")
     context = mp.get_context("spawn")
     data_queue = context.Queue()
     done = context.Event()
+    consumer_spec = StageWorkerProcessSpec(
+        process_name="direct-ipc-consumer",
+        stage_specs=[
+            StageLaunchConfig(
+                stage_name="consumer",
+                factory=f"{__name__}._direct_ipc_consumer_factory",
+                factory_args={"data_queue": data_queue, "done": done},
+            )
+        ],
+    )
     processes = [
         context.Process(target=_direct_ipc_producer, args=(data_queue, done)),
-        context.Process(target=_direct_ipc_consumer, args=(data_queue, done)),
+        context.Process(
+            target=stage_process_main,
+            args=(consumer_spec, context.Event()),
+        ),
     ]
 
     for process in processes:
