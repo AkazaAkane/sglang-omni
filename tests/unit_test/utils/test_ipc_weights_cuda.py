@@ -71,6 +71,7 @@ def test_weight_share_stage_bootstrap_supports_direct_cuda_ipc(
     context = mp.get_context("spawn")
     data_queue = context.Queue()
     done = context.Event()
+    ready = context.Event()
     consumer_spec = StageWorkerProcessSpec(
         process_name="direct-ipc-consumer",
         stage_specs=[
@@ -85,7 +86,7 @@ def test_weight_share_stage_bootstrap_supports_direct_cuda_ipc(
         context.Process(target=_direct_ipc_producer, args=(data_queue, done)),
         context.Process(
             target=stage_process_main,
-            args=(consumer_spec, context.Event()),
+            args=(consumer_spec, ready),
         ),
     ]
 
