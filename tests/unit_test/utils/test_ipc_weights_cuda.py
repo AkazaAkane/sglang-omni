@@ -10,6 +10,7 @@ regression would read the pre-mutation values and fail here.
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ import pytest
 import torch
 from torch import nn
 
+from sglang_omni.comm import stage_io
 from sglang_omni.utils import ipc_weights
 
 pytestmark = pytest.mark.skipif(
@@ -36,6 +38,49 @@ def _wait(event: Any, name: str) -> None:
 
 def _handle(store_dir: Path) -> str:
     return str(store_dir / "_Tiny.weights-ipc")
+
+
+def _direct_ipc_producer(data_queue: Any, done: Any) -> None:
+    os.environ[ipc_weights.ENV_WEIGHT_SHARE] = "leader:/unused"
+    torch.cuda.set_device(0)
+    ipc_weights.prepare_weight_share_process_compat()
+    tensor = torch.arange(8, dtype=torch.float32, device="cuda")
+    data_queue.put(stage_io.serialize_direct_cuda_ipc_stream_chunk(tensor, None))
+    _wait(done, "direct CUDA IPC consumer")
+
+
+def _direct_ipc_consumer(data_queue: Any, done: Any) -> None:
+    os.environ[ipc_weights.ENV_WEIGHT_SHARE] = "follower:/unused"
+    torch.cuda.set_device(0)
+    ipc_weights.prepare_weight_share_process_compat()
+    ref = data_queue.get(timeout=60)
+    tensor, metadata = stage_io.deserialize_direct_cuda_ipc_stream_chunk(ref)
+    assert torch.equal(tensor, torch.arange(8, dtype=torch.float32, device="cuda"))
+    assert metadata is None
+    done.set()
+
+
+def test_weight_share_reductions_are_symmetric_for_direct_cuda_ipc() -> None:
+    context = mp.get_context("spawn")
+    data_queue = context.Queue()
+    done = context.Event()
+    processes = [
+        context.Process(target=_direct_ipc_producer, args=(data_queue, done)),
+        context.Process(target=_direct_ipc_consumer, args=(data_queue, done)),
+    ]
+
+    for process in processes:
+        process.start()
+    for process in reversed(processes):
+        process.join(120)
+    for process in processes:
+        if process.is_alive():
+            process.kill()
+            process.join()
+    data_queue.close()
+    data_queue.join_thread()
+
+    assert [process.exitcode for process in processes] == [0, 0]
 
 
 def _leader(store_dir: Path, ready: Any, aliased: Any, mutated: Any, done: Any) -> None:

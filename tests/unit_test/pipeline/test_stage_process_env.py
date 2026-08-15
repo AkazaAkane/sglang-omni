@@ -50,6 +50,34 @@ def _worker_spec(*stage_specs: StageLaunchConfig) -> StageWorkerProcessSpec:
     )
 
 
+def test_stage_process_prepares_weight_share_compat_before_run(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        stage_workers,
+        "_prepare_accelerator_environment",
+        lambda *args: calls.append("accelerator"),
+    )
+    monkeypatch.setattr(
+        stage_workers,
+        "apply_gpu_compat_env_defaults",
+        lambda: calls.append("gpu_compat"),
+    )
+    monkeypatch.setattr(
+        stage_workers,
+        "prepare_weight_share_process_compat",
+        lambda: calls.append("weight_share"),
+    )
+    monkeypatch.setattr(
+        stage_workers, "_run_process", lambda *args: calls.append("run")
+    )
+
+    stage_workers.stage_process_main(
+        _worker_spec(StageLaunchConfig(stage_name="stage")), object()
+    )
+
+    assert calls == ["accelerator", "gpu_compat", "weight_share", "run"]
+
+
 def test_tp_process_env_maps_logical_gpu_through_visible_devices() -> None:
     env = cuda_platform.get_stage_process_env(
         _tp_spec(gpu_id=1), {"CUDA_VISIBLE_DEVICES": "3,4"}
