@@ -268,6 +268,12 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     "MossTTSDelaySGLangModel": WeightSharePolicy(
         private_tensor_names=frozenset({"_decode_input_embedding.weight"})
     ),
+    # Note (Jiaxin Deng): Qwen3-TTS stages decode feedback into this
+    # dual-registered embedding, listed under its deduped canonical name; the
+    # external speech tokenizer never enters the module tree.
+    "Qwen3TTSTalker": WeightSharePolicy(
+        private_tensor_names=frozenset({"model._decode_feedback_embedding.weight"})
+    ),
     # Note (Jiaxin Deng): the four ASR models carry no decode staging scratch;
     # every registered tensor is checkpoint-loaded or an init-computed constant.
     "MossTranscribeDiarizeForConditionalGeneration": WeightSharePolicy(),
@@ -298,12 +304,6 @@ AUDIT_ONLY_WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # scheduler and pool state, never in registered tensors; its pipeline also
     # declares no generation SGLang stage, so the launcher cannot drive it.
     "LLaDA2MoeModelLM": WeightSharePolicy(),
-    # Note (Jiaxin Deng): Qwen3-TTS stages decode feedback into this
-    # dual-registered embedding, listed under its deduped canonical name; the
-    # external speech tokenizer never enters the module tree.
-    "Qwen3TTSTalker": WeightSharePolicy(
-        private_tensor_names=frozenset({"model._decode_feedback_embedding.weight"})
-    ),
     # Note (Jiaxin Deng): Qwen3-Omni runs two engines per pipeline; the
     # launcher only drives single-SGLang-engine pipelines, so these cannot
     # reach e2e validation on it. The talker keeps its decode staging in

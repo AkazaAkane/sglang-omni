@@ -27,6 +27,7 @@ WEIGHT_SHARE_VALIDATED_CONFIGS: dict[str, str] = {
         "MossTranscribeDiarizeForConditionalGeneration"
     ),
     "Qwen3ASRPipelineConfig": "Qwen3ASRForConditionalGeneration",
+    "Qwen3TTSPipelineConfig": "Qwen3TTSTalker",
     "WhisperASRPipelineConfig": "WhisperForConditionalGeneration",
     "FunASRPipelineConfig": "FunAsrNanoForConditionalGeneration",
 }
