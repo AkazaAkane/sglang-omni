@@ -25,7 +25,6 @@ from sglang_omni.models.moss_transcribe_diarize.config import (
 from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
 from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
-from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 from sglang_omni.utils import ipc_weights
 
@@ -45,7 +44,6 @@ VALIDATED_CONFIG_CLASSES = {
     "MossTTSPipelineConfig": MossTTSPipelineConfig,
     "MossTranscribeDiarizePipelineConfig": MossTranscribeDiarizePipelineConfig,
     "Qwen3ASRPipelineConfig": Qwen3ASRPipelineConfig,
-    "Qwen3TTSPipelineConfig": Qwen3TTSPipelineConfig,
     "WhisperASRPipelineConfig": WhisperASRPipelineConfig,
     "FunASRPipelineConfig": FunASRPipelineConfig,
 }
@@ -118,7 +116,7 @@ def test_multi_engine_pipeline_fails_the_singleton_check(tmp_path):
 
 @pytest.mark.parametrize(
     "config_cls",
-    ["VoxtralTTSPipelineConfig", "MingTTSPipelineConfig"],
+    ["VoxtralTTSPipelineConfig", "Qwen3TTSPipelineConfig", "MingTTSPipelineConfig"],
 )
 def test_weight_share_rejected_for_unvalidated_configs(tmp_path, config_cls):
     yaml_path = _write_yaml(tmp_path, config_cls)
