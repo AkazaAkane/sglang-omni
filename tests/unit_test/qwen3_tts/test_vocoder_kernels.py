@@ -64,10 +64,12 @@ def test_fuse_vocoder_decoder_keeps_originals_on_prewarm_failure(
         (1, 384, 192),
         (1, 768, 257),
         (1, 96, 65536),
-        (1, 96, 66645),
+        (1, 96, 122880),
         (4, 1536, 1),
         (8, 384, 64),
         (16, 96, 37845),
+        (32, 96, 64),
+        (2, 4, 33),
     ],
 )
 def test_fused_snake_beta_cuda_parity_uses_kernel(
@@ -96,13 +98,16 @@ def test_fused_snake_beta_cuda_parity_uses_kernel(
         hidden_states: torch.Tensor,
         alpha: torch.Tensor,
         beta: torch.Tensor,
+        eps: float,
     ) -> torch.Tensor:
         launches.append(tuple(hidden_states.shape))
-        return original_launch(hidden_states, alpha, beta)
+        return original_launch(hidden_states, alpha, beta, eps)
 
     monkeypatch.setattr(vocoder_kernels, "launch", record_launch)
 
-    actual = vocoder_kernels.fused_snake_beta(x, original.alpha, original.beta)
+    actual = vocoder_kernels.fused_snake_beta(
+        x, original.alpha, original.beta, original.no_div_by_zero
+    )
 
     assert actual is not None
     assert launches == [(batch, channels, frames)]
@@ -129,29 +134,28 @@ def test_shared_snake_preserves_parameters_and_cpu_fallback(dtype: torch.dtype) 
     assert torch.equal(decoder(x), expected)
 
 
-def test_shared_snake_leaves_nonstandard_epsilon_eager() -> None:
-    original = _StubSnakeBeta(96)
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_shared_snake_uses_the_module_epsilon() -> None:
+    original = _StubSnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
     original.no_div_by_zero = 1e-3
     decoder = torch.nn.Sequential(original)
-    assert vocoder_kernels.fuse_vocoder_decoder(decoder) == 0
-    assert decoder[0] is original
+    x = torch.randn(1, 96, 257, device="cuda", dtype=torch.bfloat16)
+    with torch.inference_mode():
+        expected = original(x)
+        assert vocoder_kernels.fuse_vocoder_decoder(decoder) == 1
+        assert torch.equal(decoder(x), expected)
 
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-@pytest.mark.parametrize(
-    "kind", ["dtype", "layout", "batch", "channels", "empty", "length"]
-)
+@pytest.mark.parametrize("kind", ["dtype", "layout", "empty", "length"])
 def test_shared_snake_cuda_falls_back_outside_envelope(kind: str) -> None:
     batch, channels, frames = 2, 96, 17
-    if kind == "batch":
-        batch = 17
-    elif kind == "channels":
-        channels = 4
-    elif kind == "empty":
+    if kind == "empty":
         frames = 0
     elif kind == "length":
-        frames = 66646
+        batch, channels, frames = 1, 1, vocoder_kernels.MAX_T + 1
     dtype = torch.float32 if kind == "dtype" else torch.bfloat16
     original = _StubSnakeBeta(channels).to(device="cuda", dtype=dtype).eval()
     x = torch.randn(batch, channels, frames, device="cuda", dtype=dtype)
@@ -159,7 +163,10 @@ def test_shared_snake_cuda_falls_back_outside_envelope(kind: str) -> None:
         x = x[..., ::2]
     with torch.inference_mode():
         assert (
-            vocoder_kernels.fused_snake_beta(x, original.alpha, original.beta) is None
+            vocoder_kernels.fused_snake_beta(
+                x, original.alpha, original.beta, original.no_div_by_zero
+            )
+            is None
         )
         assert torch.equal(vocoder_kernels.FusedSnakeBeta(original)(x), original(x))
 
@@ -177,7 +184,9 @@ def test_shared_snake_bf16_encodings_and_denormals() -> None:
             torch.tensor([-90.0, -80.0, 0.0], device="cuda").repeat(32)
         )
         original.beta.copy_(torch.tensor([-90.0, 0.0, 80.0], device="cuda").repeat(32))
-        actual = vocoder_kernels.fused_snake_beta(x, original.alpha, original.beta)
+        actual = vocoder_kernels.fused_snake_beta(
+            x, original.alpha, original.beta, original.no_div_by_zero
+        )
         assert actual is not None
         assert torch.equal(actual, original(x))
 
@@ -193,7 +202,7 @@ def test_shared_snake_prewarm_covers_new_shapes_and_capture(
     monkeypatch.setattr(vocoder_kernels.snake_beta_kernel, "compile", compile_kernel)
     with torch.inference_mode():
         for index, frames in enumerate(
-            (1, 16, 33, 64, 65, 96, 128, 129, 192, 256, 257, 1024, 66645)
+            (1, 16, 33, 64, 65, 96, 128, 129, 192, 256, 257, 1024, 122880)
         ):
             channels = (96, 192, 384, 768, 1536)[index % 5]
             original = (
@@ -207,7 +216,7 @@ def test_shared_snake_prewarm_covers_new_shapes_and_capture(
             graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(graph):
                 actual = vocoder_kernels.fused_snake_beta(
-                    x, original.alpha, original.beta
+                    x, original.alpha, original.beta, original.no_div_by_zero
                 )
             graph.replay()
             assert actual is not None

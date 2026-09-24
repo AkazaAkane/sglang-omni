@@ -5,7 +5,7 @@ The qwen-tts SnakeBeta.forward evaluates, on a [B, C, T] bf16 tensor::
 
     alpha = torch.exp(self.alpha[None, :, None])
     beta = torch.exp(self.beta[None, :, None])
-    x = x + (1.0 / (beta + 1e-9)) * torch.pow(torch.sin(x * alpha), 2)
+    x = x + (1.0 / (beta + self.no_div_by_zero)) * torch.pow(torch.sin(x * alpha), 2)
 
 as eight separate elementwise CUDA kernels. Every one of those ops computes
 in fp32 and rounds to bf16 once (PyTorch opmath semantics), so the fused
@@ -14,7 +14,7 @@ bf16 conversion after every step and is bitwise identical to eager:
 
     a  = bf16(expf(alpha_c))         # torch.exp(alpha)
     b  = bf16(expf(beta_c))          # torch.exp(beta)
-    t  = bf16(f32(b) + 1e-9f)        # beta + no_div_by_zero
+    t  = bf16(f32(b) + f32(eps))     # beta + no_div_by_zero
     r  = bf16(1.0f / f32(t))         # 1.0 / (...)   (div.rn)
     s  = bf16(f32(x) * f32(a))       # x * alpha
     sn = bf16(sinf(f32(s)))          # torch.sin
@@ -52,10 +52,8 @@ except Exception:  # pragma: no cover
     libdevice = None
     HAS_TRITON = False
 
-ALLOWED_CHANNELS = frozenset((1536, 768, 384, 192, 96))
-MAX_BATCH = 16
-# note (Yuhao Chen): serial Code2Wav window traces reach 66,645 activation samples.
-MAX_T = 66645
+# note (ratish): CUDA caps the launch's second axis, cdiv(T, 1024), at 65,535
+MAX_T = 65535 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +67,7 @@ if HAS_TRITON:
         beta_ptr,
         C,
         T,
+        eps,
         BLOCK: tl.constexpr,
     ):
         # One program handles BLOCK elements of one (b, c) row. Every
@@ -80,7 +79,7 @@ if HAS_TRITON:
         b_raw = tl.load(beta_ptr + c).to(tl.float32)
         a = libdevice.exp(a_raw).to(tl.bfloat16).to(tl.float32)
         b = libdevice.exp(b_raw).to(tl.bfloat16).to(tl.float32)
-        t = (b + 1e-9).to(tl.bfloat16).to(tl.float32)
+        t = (b + eps).to(tl.bfloat16).to(tl.float32)
         r = libdevice.div_rn(1.0, t).to(tl.bfloat16).to(tl.float32)
 
         offs = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
@@ -115,8 +114,10 @@ def block_for(t: int) -> int:
 
 
 # note (ratish): opaque to torch.compile, which cannot trace the Triton launch
-@register_custom_op(op_name="qwen3_tts_fused_snake_beta", mutates_args=[], out_shape=0)
-def launch(x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor) -> torch.Tensor:
+@register_custom_op(op_name="fused_snake_beta", mutates_args=[], out_shape=0)
+def launch(
+    x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor, eps: float
+) -> torch.Tensor:
     batch, channels, t = x.shape
     out = torch.empty_like(x)
     block = block_for(t)
@@ -129,6 +130,7 @@ def launch(x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor) -> torch.Te
             beta,
             channels,
             t,
+            eps,
             BLOCK=block,
             num_warps=4,
             enable_reflect_ftz=False,
@@ -138,73 +140,34 @@ def launch(x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor) -> torch.Te
 
 
 def fused_snake_beta(
-    x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor
+    x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor, eps: float
 ) -> torch.Tensor | None:
     """Fused SnakeBeta. Returns None outside the supported envelope.
 
-    Envelope: x [B, C, T] bfloat16 contiguous CUDA, alpha/beta
-    bfloat16 [C] on the same device, 1 <= B <= 16, C in {1536, 768, 384,
-    192, 96}, 1 <= T <= 66645. Inside the envelope the result is bitwise
-    identical to the eager qwen-tts SnakeBeta.forward. Never raises and
-    never synchronizes with the host (safe under CUDA graph capture).
+    Envelope: x [B, C, T] bfloat16 contiguous CUDA with T <= 65535 * 1024,
+    alpha/beta bfloat16 [C] on the same device. Inside the envelope the result
+    is bitwise identical to the eager SnakeBeta.forward with no_div_by_zero
+    eps, and the call never synchronizes with the host (safe under CUDA graph
+    capture).
     """
-    try:
-        if not HAS_TRITON:
-            return None
-        else:
-            pass
-        if (
-            not isinstance(x, torch.Tensor)
-            or not isinstance(alpha, torch.Tensor)
-            or not isinstance(beta, torch.Tensor)
-        ):
-            return None
-        else:
-            pass
-        if (
-            x.dtype is not torch.bfloat16
-            or alpha.dtype is not torch.bfloat16
-            or beta.dtype is not torch.bfloat16
-        ):
-            return None
-        else:
-            pass
-        if x.device.type != "cuda":
-            return None
-        else:
-            pass
-        if alpha.device != x.device or beta.device != x.device:
-            return None
-        else:
-            pass
-        if x.dim() != 3 or not x.is_contiguous():
-            return None
-        else:
-            pass
-        batch, channels, t = x.shape
-        if channels not in ALLOWED_CHANNELS:
-            return None
-        else:
-            pass
-        if not (1 <= batch <= MAX_BATCH) or not (1 <= t <= MAX_T):
-            return None
-        else:
-            pass
-        if alpha.shape != (channels,) or beta.shape != (channels,):
-            return None
-        else:
-            pass
-        if not alpha.is_contiguous():
-            alpha = alpha.contiguous()
-        else:
-            pass
-        if not beta.is_contiguous():
-            beta = beta.contiguous()
-        else:
-            pass
-    except Exception:
+    if not HAS_TRITON:
         return None
-    return launch(x, alpha, beta)
+    elif (
+        x.dtype is not torch.bfloat16
+        or alpha.dtype is not torch.bfloat16
+        or beta.dtype is not torch.bfloat16
+    ):
+        return None
+    elif x.device.type != "cuda" or alpha.device != x.device or beta.device != x.device:
+        return None
+    elif x.dim() != 3 or not x.is_contiguous() or x.numel() == 0:
+        return None
+    elif x.shape[2] > MAX_T:
+        return None
+    elif alpha.shape != (x.shape[1],) or beta.shape != (x.shape[1],):
+        return None
+    else:
+        return launch(x, alpha.contiguous(), beta.contiguous(), eps)
 
 
 class FusedSnakeBeta(torch.nn.Module):
@@ -212,19 +175,20 @@ class FusedSnakeBeta(torch.nn.Module):
 
     def __init__(self, original: torch.nn.Module) -> None:
         super().__init__()
-        self.in_features = getattr(original, "in_features", None)
         self.alpha = original.alpha
         self.beta = original.beta
         self.no_div_by_zero = original.no_div_by_zero
         self.train(original.training)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        fused = fused_snake_beta(hidden_states, self.alpha, self.beta)
+        fused = fused_snake_beta(
+            hidden_states, self.alpha, self.beta, self.no_div_by_zero
+        )
         if fused is not None:
             return fused
         else:
             pass
-        # Original qwen-tts SnakeBeta arithmetic, op for op.
+        # Original SnakeBeta arithmetic, op for op.
         alpha = self.alpha.unsqueeze(0).unsqueeze(-1)
         beta = self.beta.unsqueeze(0).unsqueeze(-1)
         alpha = torch.exp(alpha)
@@ -233,17 +197,6 @@ class FusedSnakeBeta(torch.nn.Module):
             1.0 / (beta + self.no_div_by_zero)
         ) * torch.pow(torch.sin(hidden_states * alpha), 2)
         return hidden_states
-
-
-def is_snake_beta(module: torch.nn.Module) -> bool:
-    return (
-        type(module).__name__ == "SnakeBeta"
-        and isinstance(getattr(module, "alpha", None), torch.Tensor)
-        and isinstance(getattr(module, "beta", None), torch.Tensor)
-        and module.alpha.ndim == 1
-        and module.beta.shape == module.alpha.shape
-        and getattr(module, "no_div_by_zero", None) == 1e-9
-    )
 
 
 def prewarm(device: torch.device) -> None:
@@ -261,7 +214,7 @@ def prewarm(device: torch.device) -> None:
         for t in (2, 128, 256, 1024):  # one T per BLOCK bucket
             x = torch.zeros((1, 96, t), dtype=torch.bfloat16, device=device)
             ab = torch.zeros((96,), dtype=torch.bfloat16, device=device)
-            launch(x, ab, ab)
+            launch(x, ab, ab, 1e-9)
 
 
 def prewarm_replacements(
@@ -289,7 +242,7 @@ def fuse_vocoder_decoder(decoder: torch.nn.Module) -> int:
     replacements: list[tuple[torch.nn.Module, str]] = []
     for module in decoder.modules():
         for name, child in module.named_children():
-            if is_snake_beta(child):
+            if type(child).__name__ == "SnakeBeta":
                 replacements.append((module, name))
             else:
                 pass

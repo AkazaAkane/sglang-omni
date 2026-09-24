@@ -247,9 +247,9 @@ stages:
 ```
 
 The default is `false`. Fusion preserves the eager BF16 rounding steps and
-uses the same checkpoint parameters. It supports contiguous CUDA BF16
-activations with batch sizes 1 through 16, the decoder's existing channel
-widths, and activation lengths up to 66645; other inputs use eager arithmetic.
+uses the same checkpoint parameters. It covers contiguous CUDA BF16
+activations of any batch size and channel count, up to the CUDA launch limit
+of 65535 x 1024 samples per row; other inputs use eager arithmetic.
 Kernel variants are prewarmed
 before graph capture. If prewarm fails, the original eager modules remain
 installed. This option works with CUDA Graph replay enabled or disabled.

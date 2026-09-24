@@ -3053,7 +3053,12 @@ def test_qwen3_tts_fuse_vocoder_decoder_replaces_snake_beta_modules() -> None:
     assert isinstance(decoder[1], FusedSnakeBeta)
     assert isinstance(decoder[2][0], FusedSnakeBeta)
     assert torch.equal(decoder(x), expected)
-    assert fused_snake_beta(x, decoder[1].alpha, decoder[1].beta) is None
+    assert (
+        fused_snake_beta(
+            x, decoder[1].alpha, decoder[1].beta, decoder[1].no_div_by_zero
+        )
+        is None
+    )
 
 
 def test_qwen3_tts_streaming_vocoder_fused_snake_activation_flag() -> None:

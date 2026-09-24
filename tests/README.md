@@ -685,7 +685,8 @@ that happened to contain an older version of the test.
     and slot lifecycle across abort and failure paths. The `accelerator` cases
     cover real pinned buffers and events, eager/graph parity, in-flight
     completion queries, abort recovery, and cross-device use.
-  - Shared SnakeBeta: BF16 bitwise parity, batch-16 support, eager fallback,
+  - Shared SnakeBeta: BF16 bitwise parity at any batch and channel count and the
+    module's own epsilon, eager fallback,
     prewarm without runtime compilation, and factory installation before
     graph capture. The real checkpoint gates require explicit local paths:
 
