@@ -51,7 +51,7 @@ def test_factory_installs_shared_snake_before_graph_capture(
         total_gpu_memory_fraction=0.1,
         fused_snake_activation=enabled,
     )
-    assert scheduler._cuda_graph_runner is graph_runner
+    assert scheduler.cuda_graph_runner is graph_runner
     assert model.decoder[0].alpha is original.alpha
     assert model.decoder[0].beta is original.beta
 
@@ -131,7 +131,7 @@ def test_real_code2wav_pcm_equal(monkeypatch: pytest.MonkeyPatch) -> None:
                 device="cuda:0",
                 enable_output_overlap=overlap,
                 enable_cuda_graph=runner is not None,
-                _cuda_graph_runner=runner,
+                cuda_graph_runner=runner,
             )
             scheduler.stream_payloads["parity"] = make_qwen_payload(request_id="parity")
             state = scheduler.get_or_create_stream_state("parity")
