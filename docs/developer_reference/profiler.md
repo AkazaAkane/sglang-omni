@@ -207,6 +207,8 @@ retractions.
 
 Code2Wav `batch_size` describes the scheduled participant group;
 `effective_batch_size` describes actual executed sub-batches. Execution
+in the default serial path is also aggregated from `code2wav_decode_start/end`,
+with an effective batch size of one per forward. Execution
 mode and fallback reason histograms count sub-batches, using the existing
 `sub_batch_execution` list when available. `graph_hit_rate` is a fraction
 of graph hits over graph hits plus explicit eager fallbacks. Intentionally

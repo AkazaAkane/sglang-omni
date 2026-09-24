@@ -489,7 +489,7 @@ def serving_summary(timelines: dict[str, RequestTimeline]) -> ServingSummary:
                     value = metadata.get(field_name)
                     if isinstance(value, (int, float)):
                         samples[stage][metric].append(value)
-            elif name == "code2wav_batch_start":
+            elif name in ("code2wav_batch_start", "code2wav_decode_start"):
                 for field_name in (
                     "batch_size",
                     "active_request_count",
@@ -499,14 +499,16 @@ def serving_summary(timelines: dict[str, RequestTimeline]) -> ServingSummary:
                     value = metadata.get(field_name)
                     if isinstance(value, (int, float)):
                         samples[stage][field_name].append(value)
-            elif name == "code2wav_batch_end":
+            elif name in ("code2wav_batch_end", "code2wav_decode_end"):
                 # note (AkazaAkane): sub-batches, when present, are authoritative even if empty.
                 executions = metadata.get("sub_batch_execution", [metadata])
                 for execution in executions:
                     mode = execution.get("execution_mode")
                     if isinstance(mode, str):
                         modes[stage][mode] += 1
-                    value = execution.get("batch_size")
+                    value = execution.get(
+                        "batch_size", 1 if name == "code2wav_decode_end" else None
+                    )
                     if isinstance(value, (int, float)):
                         samples[stage]["effective_batch_size"].append(value)
                     reason = execution.get("fallback_reason")

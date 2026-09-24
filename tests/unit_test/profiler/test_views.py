@@ -143,6 +143,54 @@ def test_serving_summary_code2wav_subbatches_and_optional_metadata(
     assert serving_summary({}) == {}
 
 
+def test_serving_summary_serial_code2wav(tmp_path: Path) -> None:
+    events = []
+    for index, (mode, reason) in enumerate(
+        [
+            ("cuda_graph", None),
+            ("eager", "ineligible"),
+            ("eager", None),
+        ]
+    ):
+        events.extend(
+            [
+                _ev(
+                    "r",
+                    "code2wav",
+                    "code2wav_decode_start",
+                    index * 2_000_000,
+                    active_request_count=16,
+                    inbox_depth=8,
+                ),
+                _ev(
+                    "r",
+                    "code2wav",
+                    "code2wav_decode_end",
+                    (index * 2 + 1) * 1_000_000,
+                    active_request_count=16,
+                    inbox_depth=8,
+                    execution_mode=mode,
+                    fallback_reason=reason,
+                ),
+            ]
+        )
+    _write_events(tmp_path / "events_test.jsonl", events)
+    summary = build_report(tmp_path)["serving_summary"]["code2wav"]
+    assert summary["effective_batch_size"] == {
+        "count": 3,
+        "avg": 1,
+        "p50": 1,
+        "p95": 1,
+        "max": 1,
+    }
+    assert summary["execution_mode"] == {"cuda_graph": 1, "eager": 2}
+    assert summary["graph_hit_rate"] == 0.5
+    assert summary["fallback_reason"] == {"ineligible": 1}
+    assert summary["inbox_depth"]["count"] == 3
+    assert summary["active_request_count"]["avg"] == 16
+    assert summary["decode_ms"]["avg"] == 1
+
+
 def test_serving_summary_intentional_eager_and_cli(tmp_path: Path, capsys) -> None:
     from sglang_omni.profiler.__main__ import main
 
