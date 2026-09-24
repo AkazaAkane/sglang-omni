@@ -161,10 +161,7 @@ def test_real_code2wav_pcm_equal(monkeypatch: pytest.MonkeyPatch) -> None:
         for value, pcm in zip(codes, expected):
             launch.reset_mock()
             assert torch.equal(model(value), pcm), tuple(value.shape)
-            if value.shape[-1] <= 35:
-                assert launch.call_count == 29, tuple(value.shape)
-            else:
-                assert 0 < launch.call_count < 29, tuple(value.shape)
+            assert launch.call_count == 29, tuple(value.shape)
         launch.reset_mock()
         monkeypatch.setattr(snake_beta, "launch", original_launch)
 
