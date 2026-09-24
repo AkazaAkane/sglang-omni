@@ -237,14 +237,14 @@ The feature derives the exact `B=1` threshold windows from
 `T{10,20,30,35}`. Unsupported shapes and final stream tails run eagerly.
 Capture-time incompatibilities also fall back to eager execution.
 
-Code2Wav runs the shared Qwen3-TTS/Omni Triton SnakeBeta activation by
-default. Fusion preserves the eager BF16 rounding steps bit for bit and uses
-the same checkpoint parameters. It covers contiguous CUDA BF16 activations of
-any batch size and channel count, up to the CUDA launch limit of 65535 x 1024
-samples per row; other inputs use eager arithmetic. Kernel variants are
-prewarmed before graph capture. If prewarm fails, the original eager modules
-remain installed. This option works with CUDA Graph replay enabled or
-disabled. To keep the eager activation:
+The SnakeBeta activation of the Code2Wav decoder runs as one fused Triton
+kernel by default on CUDA devices, shared with the Qwen3-TTS vocoder. The
+kernel keeps the checkpoint parameters and every BF16 rounding step of the
+eager activation, so its output is bitwise identical, and it is compiled
+before graph capture, with or without CUDA Graph replay. Inputs outside its
+contract (a dtype other than BF16, a non-contiguous layout, or rows longer
+than 65535 x 1024 samples) run the eager arithmetic, and if the kernel cannot
+be compiled the eager modules stay installed. To keep the eager activation:
 
 ```yaml
 stages:
@@ -252,10 +252,6 @@ stages:
     factory:
       fused_snake_activation: false
 ```
-
-The fused path removes about 28 % of the decoder's kernel launches and 7 to
-10 % of its device time per window; the end-to-end gain at c16 sits inside
-run-to-run noise.
 
 Output overlap is also enabled by default on CUDA devices: each threshold
 window's waveform readback runs as an asynchronous device-to-host copy into a
