@@ -694,7 +694,7 @@ that happened to contain an older version of the test.
     QWEN3_OMNI_MODEL_PATH=/path/to/Qwen3-Omni-30B-A3B-Instruct \
       pytest tests/unit_test/qwen3_omni/test_code2wav_snake_beta.py -q
     QWEN3_TTS_TOKENIZER_PATH=/path/to/speech_tokenizer \
-      pytest tests/unit_test/utils/test_snake_beta.py -q
+      pytest tests/unit_test/qwen3_tts/test_incremental_codec.py -q
     ```
 
     Real checkpoint cases carry both `benchmark` and `accelerator` markers.

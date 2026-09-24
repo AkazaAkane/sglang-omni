@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from unittest.mock import Mock
 
 import pytest
@@ -116,15 +115,18 @@ def test_fused_snake_beta_cuda_parity_uses_kernel(
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 def test_shared_snake_preserves_parameters_and_cpu_fallback(dtype: torch.dtype) -> None:
     original = _StubSnakeBeta(96).to(dtype=dtype).eval()
-    decoder = torch.nn.Sequential(original)
+    nested = _StubSnakeBeta(96).to(dtype=dtype).eval()
+    decoder = torch.nn.Sequential(original, torch.nn.Sequential(nested))
     x = torch.randn(2, 96, 17).to(dtype=dtype)
-    expected = original(x)
+    expected = decoder(x)
     state = {name: value.clone() for name, value in decoder.state_dict().items()}
 
-    assert snake_beta.fuse_vocoder_decoder(decoder) == 1
+    assert snake_beta.fuse_vocoder_decoder(decoder) == 2
     assert snake_beta.fuse_vocoder_decoder(decoder) == 0
+    assert isinstance(decoder[1][0], snake_beta.FusedSnakeBeta)
     assert decoder[0].alpha is original.alpha
     assert decoder[0].beta is original.beta
+    assert decoder[1][0].alpha is nested.alpha
     assert not decoder[0].training
     assert decoder.state_dict().keys() == state.keys()
     assert all(
@@ -136,14 +138,24 @@ def test_shared_snake_preserves_parameters_and_cpu_fallback(dtype: torch.dtype) 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_shared_snake_uses_the_module_epsilon() -> None:
+    # Zero log-scale parameters give exp(beta) = 1, so an epsilon of 0.5 makes the
+    # denominator 1.5, a full bf16 step away from the 1e-9 default's result.
     original = _StubSnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
-    original.no_div_by_zero = 1e-3
-    decoder = torch.nn.Sequential(original)
-    x = torch.randn(1, 96, 257, device="cuda", dtype=torch.bfloat16)
+    x = torch.ones(1, 96, 257, device="cuda", dtype=torch.bfloat16)
     with torch.inference_mode():
+        original.alpha.zero_()
+        original.beta.zero_()
+        original.no_div_by_zero = 0.5
         expected = original(x)
-        assert snake_beta.fuse_vocoder_decoder(decoder) == 1
-        assert torch.equal(decoder(x), expected)
+        original.no_div_by_zero = 1e-9
+        default_epsilon = original(x)
+        original.no_div_by_zero = 0.5
+        assert not torch.equal(expected, default_epsilon)
+        fused = snake_beta.fused_snake_beta(
+            x, original.alpha, original.beta, original.no_div_by_zero
+        )
+        assert fused is not None
+        assert torch.equal(fused, expected)
 
 
 @pytest.mark.accelerator
@@ -261,56 +273,3 @@ def test_shared_snake_graph_reads_current_inputs_and_parameters() -> None:
             original.beta.fill_(-value)
             graph.replay()
             assert torch.equal(actual, original(x))
-
-
-@pytest.mark.benchmark
-@pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_real_tts_decoder_and_incremental_pcm_equal() -> None:
-    checkpoint = os.environ.get("QWEN3_TTS_TOKENIZER_PATH")
-    if checkpoint is None:
-        pytest.skip("Set QWEN3_TTS_TOKENIZER_PATH to run the real checkpoint gate")
-    from sglang_omni.models.qwen3_tts.compat import (
-        apply_qwen_tts_transformers_compatibility_patches,
-    )
-    from sglang_omni.models.qwen3_tts.incremental_codec import (
-        Qwen3TTSIncrementalCodecState,
-        Qwen3TTSIncrementalDecoder,
-    )
-
-    apply_qwen_tts_transformers_compatibility_patches()
-    from qwen_tts import Qwen3TTSTokenizer
-
-    tokenizer = Qwen3TTSTokenizer.from_pretrained(
-        checkpoint,
-        device_map="cuda:0",
-        dtype=torch.bfloat16,
-        attn_implementation="sdpa",
-    )
-    decoder = tokenizer.model.decoder.eval()
-    generator = torch.Generator(device="cuda:0").manual_seed(42)
-    codes = [
-        torch.randint(
-            decoder.config.codebook_size,
-            (batch, decoder.config.num_quantizers, frames),
-            device="cuda:0",
-            generator=generator,
-        )
-        for batch, frames in ((1, 2), (1, 24), (1, 35), (8, 24))
-    ]
-    with torch.inference_mode():
-        expected = [decoder(value).clone() for value in codes]
-        incremental = Qwen3TTSIncrementalDecoder(decoder)
-        state = Qwen3TTSIncrementalCodecState()
-        parts = codes[1].split((2, 6, 8, 8), dim=-1)
-        incremental_expected = [
-            incremental.decode(part, state).clone() for part in parts
-        ]
-
-        assert snake_beta.fuse_vocoder_decoder(decoder) == 29
-        for value, pcm in zip(codes, expected):
-            assert torch.equal(decoder(value), pcm), tuple(value.shape)
-        incremental = Qwen3TTSIncrementalDecoder(decoder)
-        state = Qwen3TTSIncrementalCodecState()
-        for part, pcm in zip(parts, incremental_expected):
-            assert torch.equal(incremental.decode(part, state), pcm)
