@@ -100,17 +100,12 @@ else:
 def block_for(t: int) -> int:
     if t <= 64:
         return 64
-    else:
-        pass
-    if t <= 128:
+    elif t <= 128:
         return 128
-    else:
-        pass
-    if t <= 256:
+    elif t <= 256:
         return 256
     else:
-        pass
-    return 1024
+        return 1024
 
 
 # note (ratish): opaque to torch.compile, which cannot trace the Triton launch
@@ -202,9 +197,9 @@ class FusedSnakeBeta(torch.nn.Module):
 def prewarm(device: torch.device) -> None:
     """Compile every kernel variant before CUDA graph capture can begin.
 
-    All integer arguments are do_not_specialize, so one binary per BLOCK
-    covers every envelope shape; a JIT compile can then never happen inside
-    a stream capture.
+    All integer arguments are do_not_specialize and Triton never specializes
+    on a float value, so one binary per BLOCK covers every envelope shape and
+    epsilon; a JIT compile can then never happen inside a stream capture.
     """
     if not HAS_TRITON or device.type != "cuda":
         return
@@ -214,7 +209,7 @@ def prewarm(device: torch.device) -> None:
         for t in (2, 128, 256, 1024):  # one T per BLOCK bucket
             x = torch.zeros((1, 96, t), dtype=torch.bfloat16, device=device)
             ab = torch.zeros((96,), dtype=torch.bfloat16, device=device)
-            launch(x, ab, ab, 1e-9)
+            launch(x, ab, ab, 0.0)
 
 
 def prewarm_replacements(
@@ -235,10 +230,6 @@ def fuse_vocoder_decoder(decoder: torch.nn.Module) -> int:
     Returns the number of modules replaced. Safe to call more than once
     (already fused modules are left alone).
     """
-    if not isinstance(decoder, torch.nn.Module):
-        return 0
-    else:
-        pass
     replacements: list[tuple[torch.nn.Module, str]] = []
     for module in decoder.modules():
         for name, child in module.named_children():
