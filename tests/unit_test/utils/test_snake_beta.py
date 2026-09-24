@@ -138,8 +138,6 @@ def test_shared_snake_preserves_parameters_and_cpu_fallback(dtype: torch.dtype) 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_shared_snake_uses_the_module_epsilon() -> None:
-    # Zero log-scale parameters give exp(beta) = 1, so an epsilon of 0.5 makes the
-    # denominator 1.5, a full bf16 step away from the 1e-9 default's result.
     original = _StubSnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
     x = torch.ones(1, 96, 257, device="cuda", dtype=torch.bfloat16)
     with torch.inference_mode():
