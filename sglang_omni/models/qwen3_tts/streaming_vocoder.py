@@ -645,9 +645,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         ):
             self._device = parameter.device
         if fused_snake_activation:
-            from sglang_omni.models.qwen3_tts.vocoder_kernels import (
-                fuse_vocoder_decoder,
-            )
+            from sglang_omni.utils.snake_beta import fuse_vocoder_decoder
 
             logger.info(
                 "Qwen3-TTS vocoder fused SnakeBeta modules: %d",

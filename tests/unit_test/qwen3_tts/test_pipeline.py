@@ -3035,7 +3035,7 @@ _StubSnakeBeta.__name__ = "SnakeBeta"
 
 
 def test_qwen3_tts_fuse_vocoder_decoder_replaces_snake_beta_modules() -> None:
-    from sglang_omni.models.qwen3_tts.vocoder_kernels import (
+    from sglang_omni.utils.snake_beta import (
         FusedSnakeBeta,
         fuse_vocoder_decoder,
         fused_snake_beta,
