@@ -54,8 +54,8 @@ except Exception:  # pragma: no cover
 
 ALLOWED_CHANNELS = frozenset((1536, 768, 384, 192, 96))
 MAX_BATCH = 16
-# note (ratish): CUDA caps the launch's second axis, cdiv(T, 1024), at 65,535
-MAX_T = 65535 * 1024
+# note (Yuhao Chen): serial Code2Wav window traces reach 66,645 activation samples.
+MAX_T = 66645
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ def fused_snake_beta(
 
     Envelope: x [B, C, T] bfloat16 contiguous CUDA, alpha/beta
     bfloat16 [C] on the same device, 1 <= B <= 16, C in {1536, 768, 384,
-    192, 96}, 1 <= T <= 65535 * 1024. Inside the envelope the result is bitwise
+    192, 96}, 1 <= T <= 66645. Inside the envelope the result is bitwise
     identical to the eager qwen-tts SnakeBeta.forward. Never raises and
     never synchronizes with the host (safe under CUDA graph capture).
     """

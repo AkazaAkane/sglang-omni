@@ -63,7 +63,8 @@ def test_fuse_vocoder_decoder_keeps_originals_on_prewarm_failure(
         (2, 192, 96),
         (1, 384, 192),
         (1, 768, 257),
-        (1, 96, 122880),
+        (1, 96, 65536),
+        (1, 96, 66645),
         (4, 1536, 1),
         (8, 384, 64),
         (16, 96, 37845),
@@ -138,7 +139,9 @@ def test_shared_snake_leaves_nonstandard_epsilon_eager() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-@pytest.mark.parametrize("kind", ["dtype", "layout", "batch", "channels", "empty"])
+@pytest.mark.parametrize(
+    "kind", ["dtype", "layout", "batch", "channels", "empty", "length"]
+)
 def test_shared_snake_cuda_falls_back_outside_envelope(kind: str) -> None:
     batch, channels, frames = 2, 96, 17
     if kind == "batch":
@@ -147,6 +150,8 @@ def test_shared_snake_cuda_falls_back_outside_envelope(kind: str) -> None:
         channels = 4
     elif kind == "empty":
         frames = 0
+    elif kind == "length":
+        frames = 66646
     dtype = torch.float32 if kind == "dtype" else torch.bfloat16
     original = _StubSnakeBeta(channels).to(device="cuda", dtype=dtype).eval()
     x = torch.randn(batch, channels, frames, device="cuda", dtype=dtype)
@@ -188,7 +193,7 @@ def test_shared_snake_prewarm_covers_new_shapes_and_capture(
     monkeypatch.setattr(vocoder_kernels.snake_beta_kernel, "compile", compile_kernel)
     with torch.inference_mode():
         for index, frames in enumerate(
-            (1, 16, 33, 64, 65, 96, 128, 129, 192, 256, 257, 1024, 68565)
+            (1, 16, 33, 64, 65, 96, 128, 129, 192, 256, 257, 1024, 66645)
         ):
             channels = (96, 192, 384, 768, 1536)[index % 5]
             original = (

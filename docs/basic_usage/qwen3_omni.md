@@ -248,10 +248,14 @@ stages:
 
 The default is `false`. Fusion preserves the eager BF16 rounding steps and
 uses the same checkpoint parameters. It supports contiguous CUDA BF16
-activations with batch sizes 1 through 16 and the decoder's existing channel
-widths; other inputs use eager arithmetic. Kernel variants are prewarmed
+activations with batch sizes 1 through 16, the decoder's existing channel
+widths, and activation lengths up to 66645; other inputs use eager arithmetic.
+Kernel variants are prewarmed
 before graph capture. If prewarm fails, the original eager modules remain
 installed. This option works with CUDA Graph replay enabled or disabled.
+
+The fused path reduces decoder GPU work. No reproducible short-stream QPS
+or TTFA improvement was established in the measured serving configuration.
 
 Output overlap is also enabled by default on CUDA devices: each threshold
 window's waveform readback runs as an asynchronous device-to-host copy into a
