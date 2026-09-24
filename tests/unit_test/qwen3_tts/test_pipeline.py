@@ -2122,9 +2122,7 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
     decode_batch_sizes: list[int] = []
 
     class FakeTokenizer:
-        model = SimpleNamespace(
-            decoder=SimpleNamespace(total_upsample=4),
-        )
+        model = SimpleNamespace(decoder=_FakeQwen3TTSDecoder())
 
         def get_output_sample_rate(self):
             return 24000
@@ -2235,10 +2233,11 @@ def test_qwen3_tts_vocoder_factory_forwards_incremental_graph_config(
     assert captured["warmed"] is True
 
 
-class _FakeQwen3TTSDecoder:
+class _FakeQwen3TTSDecoder(torch.nn.Module):
     total_upsample = 4
 
     def __init__(self) -> None:
+        super().__init__()
         self.decode_inputs: list[torch.Tensor] = []
 
     def chunked_decode(self, codes: torch.Tensor) -> torch.Tensor:
