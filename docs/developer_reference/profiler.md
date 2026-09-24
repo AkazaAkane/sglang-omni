@@ -170,7 +170,7 @@ python -m sglang_omni.profiler /tmp/profiles/demo-run/events --format table
 python -m sglang_omni.profiler /tmp/profiles/demo-run/events --format json --out report.json
 ```
 
-The CLI / `build_report` returns three views derived from the same event
+The CLI / `build_report` returns four views derived from the same event
 stream:
 
 1. **Timeline** — per-request event list with `t_rel_ms` anchored at
@@ -185,6 +185,36 @@ stream:
    `stage_stream_chunk_sent` / `stage_stream_chunk_received` durations per
    (source, destination, kind). Terminal stage stream chunks are paired the
    same way with destination `coordinator`.
+4. **Serving summary** (`serving_summary`) reports queue wait, prefill and
+   request-build latency, executed scheduler batch sizes, queue/running
+   snapshots, and Code2Wav execution modes per stage. Table output appends
+   `=== Serving Summary ===`; existing JSON keys remain unchanged.
+
+Serving summary distributions include `count`, `avg`, `p50`, `p95`, and
+`max`, with linearly interpolated percentiles. Scheduler snapshots are
+sampled once per launched batch, including asynchronous launches, and are
+not weighted by request count or elapsed time. Mixed batches are reported
+separately from prefill and decode. Batch events are attached to the first
+participating request and do not create synthetic requests.
+
+`kv_available_tokens` is the allocator's free token count and
+`kv_capacity_tokens` is its capacity. Cached, evictable tokens are not
+necessarily free, so these raw values are not converted into a utilization
+ratio. `num_retracted_reqs` samples the existing metrics reporter's window
+value; it must not be summed. `retractions` counts explicit scheduler
+retraction/requeue events during profiling, excluding administrative pause
+retractions.
+
+Code2Wav `batch_size` describes the scheduled participant group;
+`effective_batch_size` describes actual executed sub-batches. Execution
+mode and fallback reason histograms count sub-batches, using the existing
+`sub_batch_execution` list when available. `graph_hit_rate` is a fraction
+of graph hits over graph hits plus explicit eager fallbacks. Intentionally
+eager execution without a fallback reason is visible in `execution_mode`
+but excluded from graph attempts. A missing denominator produces `null`,
+not a zero hit rate. Missing optional metrics are omitted; empty event
+directories return an empty serving summary. Counts cover the recorded
+worker events, so combine only the intended benchmark's event files.
 
 Hop pairs match across processes by `(request_id, source_stage, dest_stage,
 chunk_id?)`, so a single request's path through subprocesses can be

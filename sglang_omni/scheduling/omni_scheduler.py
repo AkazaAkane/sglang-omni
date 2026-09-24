@@ -54,6 +54,7 @@ from sglang_omni.profiler.event_recorder import (
     emit_model_path_start as _emit_model_path_start,
 )
 from sglang_omni.profiler.event_recorder import get_active_stage as _get_active_stage
+from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.proto.admin import (
     ADMIN_CONTINUE_GENERATION,
     ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP,
@@ -1858,6 +1859,36 @@ class OmniScheduler:
             self.processed_tokens_counter += batch.extend_num_tokens
         else:
             pass
+        self.emit_batch_snapshot(batch)
+
+    def emit_batch_snapshot(self, batch: ScheduleBatch) -> None:
+        """Record one sample per launched batch while request profiling is active."""
+        if not get_recorder().is_active() or not batch.reqs:
+            return
+        mode = batch.forward_mode
+        if mode.is_mixed():
+            batch_type = "mixed"
+        elif mode.is_decode():
+            batch_type = "decode"
+        elif mode.is_extend():
+            batch_type = "prefill"
+        else:
+            batch_type = mode.name.lower()
+        _emit_event(
+            request_id=batch.reqs[0].rid,
+            stage=None,
+            event_name="scheduler_batch_start",
+            metadata={
+                "batch_size": len(batch.reqs),
+                "batch_type": batch_type,
+                "forward_mode": mode.name,
+                "running_requests": len(self.running_batch.reqs),
+                "waiting_requests": len(self.waiting_queue),
+                "num_retracted_reqs": self.metrics_reporter.num_retracted_reqs,
+                "kv_available_tokens": self.token_to_kv_pool_allocator.available_size(),
+                "kv_capacity_tokens": self.token_to_kv_pool_allocator.size,
+            },
+        )
 
     def _run_batch(self, batch, pp_proxy_tensors=None):
         """Run a batch through the model runner.
@@ -2863,6 +2894,12 @@ class OmniScheduler:
         else:
             pass
         _Upstream._add_request_to_queue(self, req, is_retracted=is_retracted)
+        if is_retracted and get_recorder().is_active():
+            _emit_event(
+                request_id=req.rid,
+                stage=None,
+                event_name="scheduler_request_retracted",
+            )
 
     def retract_running_requests(self) -> int:
         batch = self.running_batch
