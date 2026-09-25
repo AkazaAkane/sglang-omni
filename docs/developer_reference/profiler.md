@@ -197,11 +197,11 @@ not weighted by request count or elapsed time. Mixed batches are reported
 separately from prefill and decode. Batch events are attached to the first
 participating request and do not create synthetic requests.
 
-`kv_available_tokens` is the allocator's free token count and
-`kv_capacity_tokens` is its capacity. Cached, evictable tokens are not
-necessarily free, so these raw values are not converted into a utilization
-ratio. `num_retracted_reqs` samples the existing metrics reporter's window
-value; it must not be summed. `retractions` counts explicit scheduler
+`kv_available_tokens` reports the allocator's `available_size()` in tokens.
+Composite allocators can report availability constrained by multiple pools;
+their `size` is not a matching capacity denominator, so capacity and utilization
+are omitted. `num_retracted_reqs` samples the existing metrics reporter's window
+value; it must not be summed. `observed_retractions` counts explicit scheduler
 retraction/requeue events during profiling, excluding administrative pause
 retractions.
 

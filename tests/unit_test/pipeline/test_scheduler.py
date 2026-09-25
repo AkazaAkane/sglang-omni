@@ -57,7 +57,6 @@ def test_scheduler_batch_snapshot(monkeypatch, mode, expected) -> None:
     scheduler.waiting_queue = [1, 2, 3]
     scheduler.metrics_reporter = SimpleNamespace(num_retracted_reqs=4)
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(
-        size=100,
         available_size=lambda: 25,
     )
     monkeypatch.setattr(
@@ -82,7 +81,6 @@ def test_scheduler_batch_snapshot(monkeypatch, mode, expected) -> None:
         "waiting_requests": 3,
         "num_retracted_reqs": 4,
         "kv_available_tokens": 25,
-        "kv_capacity_tokens": 100,
     }
 
 

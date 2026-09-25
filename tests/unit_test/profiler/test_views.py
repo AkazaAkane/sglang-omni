@@ -41,14 +41,14 @@ def test_serving_summary_intervals_and_batch_samples(tmp_path: Path) -> None:
     for index, wait_ms in enumerate([1, 3, 5, 7, 9]):
         events.extend(
             [
-                _ev(str(index), "thinker", "scheduler_queue_enter", 0),
-                _ev(
+                make_ev(str(index), "thinker", "scheduler_queue_enter", 0),
+                make_ev(
                     str(index),
                     "thinker",
                     "scheduler_prefill_start",
                     wait_ms * 1_000_000,
                 ),
-                _ev(
+                make_ev(
                     str(index),
                     "thinker",
                     "scheduler_prefill_end",
@@ -63,7 +63,7 @@ def test_serving_summary_intervals_and_batch_samples(tmp_path: Path) -> None:
         ("talker", "mixed", 4),
     ]:
         events.append(
-            _ev(
+            make_ev(
                 "0",
                 stage,
                 "scheduler_batch_start",
@@ -74,9 +74,9 @@ def test_serving_summary_intervals_and_batch_samples(tmp_path: Path) -> None:
                 num_retracted_reqs=4,
             )
         )
-    events.append(_ev("0", "thinker", "scheduler_request_retracted", 21_000_000))
-    events.append(_ev("0", "thinker", "scheduler_batch_start", 22_000_000))
-    _write_events(tmp_path / "events_test.jsonl", events)
+    events.append(make_ev("0", "thinker", "scheduler_request_retracted", 21_000_000))
+    events.append(make_ev("0", "thinker", "scheduler_batch_start", 22_000_000))
+    write_events(tmp_path / "events_test.jsonl", events)
     report = build_report(tmp_path)
     summary = report["serving_summary"]
     assert report["request_count"] == 5
@@ -92,7 +92,7 @@ def test_serving_summary_intervals_and_batch_samples(tmp_path: Path) -> None:
     assert summary["talker"]["prefill_batch_size"]["avg"] == 3
     assert summary["talker"]["mixed_batch_size"]["avg"] == 4
     assert "decode_batch_size" not in summary["talker"]
-    assert summary["thinker"]["retractions"] == 1
+    assert summary["thinker"]["observed_retractions"] == 1
     assert summary["thinker"]["num_retracted_reqs"]["count"] == 2
     assert report["stage_breakdown"] == [
         row.to_dict() for row in stage_breakdown(source=tmp_path)
@@ -110,8 +110,10 @@ def test_serving_summary_code2wav_subbatches_and_optional_metadata(
         {"batch_size": 1, "execution_mode": "eager", "fallback_reason": None},
     ]
     events = [
-        _ev("r", "code2wav", "code2wav_batch_start", 0, batch_size=9, inbox_depth=3),
-        _ev(
+        make_ev(
+            "r", "code2wav", "code2wav_batch_start", 0, batch_size=9, inbox_depth=3
+        ),
+        make_ev(
             "r",
             "code2wav",
             "code2wav_batch_end",
@@ -120,7 +122,7 @@ def test_serving_summary_code2wav_subbatches_and_optional_metadata(
             execution_mode="mixed",
             sub_batch_execution=executions,
         ),
-        _ev(
+        make_ev(
             "r",
             "code2wav",
             "code2wav_batch_end",
@@ -128,9 +130,9 @@ def test_serving_summary_code2wav_subbatches_and_optional_metadata(
             execution_mode="eager",
             sub_batch_execution=[],
         ),
-        _ev("r", "code2wav", "code2wav_batch_end", 3_000_000),
+        make_ev("r", "code2wav", "code2wav_batch_end", 3_000_000),
     ]
-    _write_events(tmp_path / "events_test.jsonl", events)
+    write_events(tmp_path / "events_test.jsonl", events)
     summary = build_report(tmp_path)["serving_summary"]["code2wav"]
     assert summary["execution_mode"] == {"cuda_graph": 1, "eager": 4}
     assert summary["graph_hit_count"] == 1
@@ -154,7 +156,7 @@ def test_serving_summary_serial_code2wav(tmp_path: Path) -> None:
     ):
         events.extend(
             [
-                _ev(
+                make_ev(
                     "r",
                     "code2wav",
                     "code2wav_decode_start",
@@ -162,7 +164,7 @@ def test_serving_summary_serial_code2wav(tmp_path: Path) -> None:
                     active_request_count=16,
                     inbox_depth=8,
                 ),
-                _ev(
+                make_ev(
                     "r",
                     "code2wav",
                     "code2wav_decode_end",
@@ -174,7 +176,7 @@ def test_serving_summary_serial_code2wav(tmp_path: Path) -> None:
                 ),
             ]
         )
-    _write_events(tmp_path / "events_test.jsonl", events)
+    write_events(tmp_path / "events_test.jsonl", events)
     summary = build_report(tmp_path)["serving_summary"]["code2wav"]
     assert summary["effective_batch_size"] == {
         "count": 3,
@@ -194,10 +196,10 @@ def test_serving_summary_serial_code2wav(tmp_path: Path) -> None:
 def test_serving_summary_intentional_eager_and_cli(tmp_path: Path, capsys) -> None:
     from sglang_omni.profiler.__main__ import main
 
-    _write_events(
+    write_events(
         tmp_path / "events_test.jsonl",
         [
-            _ev("r", "code2wav", "code2wav_batch_end", 0, execution_mode="eager"),
+            make_ev("r", "code2wav", "code2wav_batch_end", 0, execution_mode="eager"),
         ],
     )
     summary = build_report(tmp_path)["serving_summary"]["code2wav"]

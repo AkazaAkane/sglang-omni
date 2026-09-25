@@ -1865,6 +1865,8 @@ class OmniScheduler:
         """Record one sample per launched batch while request profiling is active."""
         if not get_recorder().is_active() or not batch.reqs:
             return
+        else:
+            pass
         mode = batch.forward_mode
         if mode.is_mixed():
             batch_type = "mixed"
@@ -1886,7 +1888,6 @@ class OmniScheduler:
                 "waiting_requests": len(self.waiting_queue),
                 "num_retracted_reqs": self.metrics_reporter.num_retracted_reqs,
                 "kv_available_tokens": self.token_to_kv_pool_allocator.available_size(),
-                "kv_capacity_tokens": self.token_to_kv_pool_allocator.size,
             },
         )
 
@@ -2900,6 +2901,8 @@ class OmniScheduler:
                 stage=None,
                 event_name="scheduler_request_retracted",
             )
+        else:
+            pass
 
     def retract_running_requests(self) -> int:
         batch = self.running_batch

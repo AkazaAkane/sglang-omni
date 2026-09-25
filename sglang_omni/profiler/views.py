@@ -481,7 +481,6 @@ def serving_summary(timelines: dict[str, RequestTimeline]) -> ServingSummary:
                             "waiting_requests",
                             "num_retracted_reqs",
                             "kv_available_tokens",
-                            "kv_capacity_tokens",
                         )
                     },
                 }
@@ -489,6 +488,8 @@ def serving_summary(timelines: dict[str, RequestTimeline]) -> ServingSummary:
                     value = metadata.get(field_name)
                     if isinstance(value, (int, float)):
                         samples[stage][metric].append(value)
+                    else:
+                        pass
             elif name in ("code2wav_batch_start", "code2wav_decode_start"):
                 for field_name in (
                     "batch_size",
@@ -499,6 +500,8 @@ def serving_summary(timelines: dict[str, RequestTimeline]) -> ServingSummary:
                     value = metadata.get(field_name)
                     if isinstance(value, (int, float)):
                         samples[stage][field_name].append(value)
+                    else:
+                        pass
             elif name in ("code2wav_batch_end", "code2wav_decode_end"):
                 # note (AkazaAkane): sub-batches, when present, are authoritative even if empty.
                 executions = metadata.get("sub_batch_execution", [metadata])
@@ -506,18 +509,28 @@ def serving_summary(timelines: dict[str, RequestTimeline]) -> ServingSummary:
                     mode = execution.get("execution_mode")
                     if isinstance(mode, str):
                         modes[stage][mode] += 1
+                    else:
+                        pass
                     value = execution.get(
                         "batch_size", 1 if name == "code2wav_decode_end" else None
                     )
                     if isinstance(value, (int, float)):
                         samples[stage]["effective_batch_size"].append(value)
+                    else:
+                        pass
                     reason = execution.get("fallback_reason")
                     if isinstance(reason, str) and reason:
                         reasons[stage][reason] += 1
+                    else:
+                        pass
                     if mode == "eager" and (
                         reason or execution.get("graph_requested") is True
                     ):
                         fallback_counts[stage] += 1
+                    else:
+                        pass
+            else:
+                pass
 
     summary: ServingSummary = {}
     for stage in sorted(set(samples) | set(modes) | set(retractions)):
@@ -534,7 +547,9 @@ def serving_summary(timelines: dict[str, RequestTimeline]) -> ServingSummary:
         if stage in retractions or any(
             name in samples[stage] for name in ("running_requests", "waiting_requests")
         ):
-            metrics["retractions"] = retractions[stage]
+            metrics["observed_retractions"] = retractions[stage]
+        else:
+            pass
         if stage in modes:
             hits = modes[stage]["cuda_graph"]
             fallbacks = fallback_counts[stage]
@@ -545,6 +560,8 @@ def serving_summary(timelines: dict[str, RequestTimeline]) -> ServingSummary:
                 graph_fallback_count=fallbacks,
                 graph_hit_rate=hits / (hits + fallbacks) if hits + fallbacks else None,
             )
+        else:
+            pass
         summary[stage] = metrics
     return summary
 
@@ -554,6 +571,8 @@ def format_serving_summary(summary: ServingSummary) -> str:
     lines = ["=== Serving Summary ==="]
     if not summary:
         lines.append("(empty)")
+    else:
+        pass
     for stage, metrics in summary.items():
         lines.append(stage)
         for name, value in metrics.items():
