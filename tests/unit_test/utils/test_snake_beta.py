@@ -10,7 +10,7 @@ import torch
 from sglang_omni.utils import snake_beta
 
 
-class _StubSnakeBeta(torch.nn.Module):
+class StubSnakeBeta(torch.nn.Module):
     """Stand-in with the qwen-tts SnakeBeta attribute layout."""
 
     def __init__(self, channels: int) -> None:
@@ -27,14 +27,14 @@ class _StubSnakeBeta(torch.nn.Module):
         )
 
 
-_StubSnakeBeta.__name__ = "SnakeBeta"
+StubSnakeBeta.__name__ = "SnakeBeta"
 
 
 def test_fuse_vocoder_decoder_keeps_originals_on_prewarm_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    first = _StubSnakeBeta(4)
-    second = _StubSnakeBeta(4)
+    first = StubSnakeBeta(4)
+    second = StubSnakeBeta(4)
     decoder = torch.nn.Sequential(first, torch.nn.Sequential(second))
 
     monkeypatch.setattr(snake_beta, "HAS_TRITON", True)
@@ -82,7 +82,7 @@ def test_fused_snake_beta_cuda_parity_uses_kernel(
 
     torch.manual_seed(0)
     device = torch.device("cuda")
-    original = _StubSnakeBeta(channels).to(device=device, dtype=torch.bfloat16)
+    original = StubSnakeBeta(channels).to(device=device, dtype=torch.bfloat16)
     x = torch.randn(
         (batch, channels, frames),
         device=device,
@@ -114,8 +114,8 @@ def test_fused_snake_beta_cuda_parity_uses_kernel(
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 def test_shared_snake_preserves_parameters_and_cpu_fallback(dtype: torch.dtype) -> None:
-    original = _StubSnakeBeta(96).to(dtype=dtype).eval()
-    nested = _StubSnakeBeta(96).to(dtype=dtype).eval()
+    original = StubSnakeBeta(96).to(dtype=dtype).eval()
+    nested = StubSnakeBeta(96).to(dtype=dtype).eval()
     decoder = torch.nn.Sequential(original, torch.nn.Sequential(nested))
     x = torch.randn(2, 96, 17).to(dtype=dtype)
     expected = decoder(x)
@@ -138,7 +138,7 @@ def test_shared_snake_preserves_parameters_and_cpu_fallback(dtype: torch.dtype) 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_shared_snake_uses_the_module_epsilon() -> None:
-    original = _StubSnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
+    original = StubSnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
     x = torch.ones(1, 96, 257, device="cuda", dtype=torch.bfloat16)
     with torch.inference_mode():
         original.alpha.zero_()
@@ -166,7 +166,7 @@ def test_shared_snake_cuda_falls_back_outside_envelope(kind: str) -> None:
     elif kind == "length":
         batch, channels, frames = 1, 1, snake_beta.MAX_T + 1
     dtype = torch.float32 if kind == "dtype" else torch.bfloat16
-    original = _StubSnakeBeta(channels).to(device="cuda", dtype=dtype).eval()
+    original = StubSnakeBeta(channels).to(device="cuda", dtype=dtype).eval()
     x = torch.randn(batch, channels, frames, device="cuda", dtype=dtype)
     if kind == "layout":
         x = x[..., ::2]
@@ -183,7 +183,7 @@ def test_shared_snake_cuda_falls_back_outside_envelope(kind: str) -> None:
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_shared_snake_bf16_encodings_and_denormals() -> None:
-    original = _StubSnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
+    original = StubSnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
     encodings = torch.arange(65536, device="cuda", dtype=torch.int32).to(torch.int16)
     values = encodings.view(torch.bfloat16)
     values = values[torch.isfinite(values)]
@@ -215,7 +215,7 @@ def test_shared_snake_prewarm_covers_new_shapes_and_capture(
         ):
             channels = (96, 192, 384, 768, 1536)[index % 5]
             original = (
-                _StubSnakeBeta(channels).to(device=device, dtype=torch.bfloat16).eval()
+                StubSnakeBeta(channels).to(device=device, dtype=torch.bfloat16).eval()
             )
             original.no_div_by_zero = (1e-9, 1e-3)[index % 2]
             batch = 16 if frames <= 1024 else 1
@@ -242,7 +242,7 @@ def test_fused_snake_beta_survives_a_fullgraph_compile() -> None:
     """A fullgraph compile of a fused decoder raised Unsupported on the launch."""
     torch.manual_seed(0)
     device = torch.device("cuda")
-    original = _StubSnakeBeta(96).to(device=device, dtype=torch.bfloat16)
+    original = StubSnakeBeta(96).to(device=device, dtype=torch.bfloat16)
     decoder = torch.nn.Sequential(original)
     x = torch.randn((2, 96, 320), device=device, dtype=torch.bfloat16)
     with torch.inference_mode():
@@ -257,7 +257,7 @@ def test_fused_snake_beta_survives_a_fullgraph_compile() -> None:
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_shared_snake_graph_reads_current_inputs_and_parameters() -> None:
-    original = _StubSnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
+    original = StubSnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
     decoder = torch.nn.Sequential(original)
     x = torch.zeros(1, 96, 33, device="cuda", dtype=torch.bfloat16)
     with torch.inference_mode():
