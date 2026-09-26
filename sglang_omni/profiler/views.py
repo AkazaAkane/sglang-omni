@@ -439,8 +439,8 @@ ServingSummary = dict[str, dict[str, MetricStats | float | int | None]]
 def serving_summary(timelines: dict[str, RequestTimeline]) -> ServingSummary:
     """Aggregate request intervals and unweighted execution samples by stage.
 
-    Graph hit rate uses graph hits plus explicit fallbacks as its denominator.
-    Missing observations are omitted; an unobserved graph hit rate is null.
+    Graph attempt success uses hits plus explicit fallbacks as its denominator.
+    Missing observations are omitted; an unobserved attempt success rate is null.
     """
     samples: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     modes: dict[str, Counter[str]] = defaultdict(Counter)
@@ -479,8 +479,12 @@ def serving_summary(timelines: dict[str, RequestTimeline]) -> ServingSummary:
                         for key in (
                             "running_requests",
                             "waiting_requests",
-                            "num_retracted_reqs",
+                            "kv_usage",
+                            "kv_used_tokens",
                             "kv_available_tokens",
+                            "kv_evictable_tokens",
+                            "request_build_pending",
+                            "request_build_backlog",
                         )
                     },
                 }
@@ -558,7 +562,9 @@ def serving_summary(timelines: dict[str, RequestTimeline]) -> ServingSummary:
                 fallback_reason=dict(reasons[stage]),
                 graph_hit_count=hits,
                 graph_fallback_count=fallbacks,
-                graph_hit_rate=hits / (hits + fallbacks) if hits + fallbacks else None,
+                graph_attempt_success_rate=(
+                    hits / (hits + fallbacks) if hits + fallbacks else None
+                ),
             )
         else:
             pass
@@ -578,7 +584,7 @@ def format_serving_summary(summary: ServingSummary) -> str:
         for name, value in metrics.items():
             if isinstance(value, dict):
                 rendered = "  ".join(f"{key}={number}" for key, number in value.items())
-            elif name == "graph_hit_rate" and value is not None:
+            elif name == "graph_attempt_success_rate" and value is not None:
                 rendered = f"{value:.1%} (hits / graph attempts)"
             else:
                 rendered = "n/a" if value is None else str(value)

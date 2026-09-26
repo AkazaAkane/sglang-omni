@@ -136,7 +136,9 @@ is hit:
 2. Coordinator starts its local recorder pointed at `<event_dir>`.
 3. Launcher broadcasts `ProfilerStartMessage` over ZMQ to every stage,
    carrying both the torch trace template and the `event_dir`.
-4. Each stage joins the per-process recorder. In a shared-process topology
+4. Only stages owning external I/O (single workers and TP leaders) join the
+   request event recorder. TP followers still start rank-local torch traces,
+   but do not record request events. In a shared-process topology
    the first stage to call `start()` wins the filename; every subsequent
    stage in the same process writes to the same file and the per-event
    `stage` field disambiguates.
@@ -197,24 +199,34 @@ not weighted by request count or elapsed time. Mixed batches are reported
 separately from prefill and decode. Batch events are attached to the first
 participating request and do not create synthetic requests.
 
-`kv_available_tokens` reports the allocator's `available_size()` in tokens.
-Composite allocators can report availability constrained by multiple pools;
-their `size` is not a matching capacity denominator, so capacity and utilization
-are omitted. `num_retracted_reqs` samples the existing metrics reporter's window
-value; it must not be summed. `observed_retractions` counts explicit scheduler
+KV samples come from the scheduler's `pool_stats_observer.get_pool_stats()`.
+`kv_usage` is `get_max_pool_usage()`, the maximum usage fraction across the
+observer's applicable pools (including SWA/SSM); it is not a ratio calculated
+from the token fields. `kv_used_tokens`, `kv_available_tokens`, and
+`kv_evictable_tokens` are the observer's full-pool used, available, and evictable
+counts. This preserves the observer's distinction between availability and
+evictable cached KV. `observed_retractions` counts explicit scheduler
 retraction/requeue events during profiling, excluding administrative pause
 retractions.
+
+`request_build_pending` samples the number of outstanding request-build futures;
+`request_build_backlog` samples payloads waiting to be submitted to the builder.
+These launch-time samples expose host preparation pressure before the model
+scheduler queue; they are not continuous occupancy or builder wait durations.
+TP request events represent logical stage activity, recorded by the leader once.
 
 Code2Wav `batch_size` describes the scheduled participant group;
 `effective_batch_size` describes actual executed sub-batches. Execution
 in the default serial path is also aggregated from `code2wav_decode_start/end`,
 with an effective batch size of one per forward. Execution
 mode and fallback reason histograms count sub-batches, using the existing
-`sub_batch_execution` list when available. `graph_hit_rate` is a fraction
+`sub_batch_execution` list when available. `graph_attempt_success_rate` is a fraction
 of graph hits over graph hits plus explicit eager fallbacks. Intentionally
 eager execution without a fallback reason is visible in `execution_mode`
 but excluded from graph attempts. A missing denominator produces `null`,
-not a zero hit rate. Missing optional metrics are omitted; empty event
+not a zero success rate. This is success among graph attempts, not the fraction
+of all executions using a graph; `execution_mode` retains the execution counts.
+Missing optional metrics are omitted; empty event
 directories return an empty serving summary. Counts cover the recorded
 worker events, so combine only the intended benchmark's event files.
 

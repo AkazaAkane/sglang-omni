@@ -72,6 +72,12 @@ def test_serving_summary_intervals_and_batch_samples(tmp_path: Path) -> None:
                 batch_size=size,
                 waiting_requests=2,
                 num_retracted_reqs=4,
+                kv_usage=0.75,
+                kv_used_tokens=75,
+                kv_available_tokens=10,
+                kv_evictable_tokens=15,
+                request_build_pending=2,
+                request_build_backlog=18,
             )
         )
     events.append(make_ev("0", "thinker", "scheduler_request_retracted", 21_000_000))
@@ -93,7 +99,22 @@ def test_serving_summary_intervals_and_batch_samples(tmp_path: Path) -> None:
     assert summary["talker"]["mixed_batch_size"]["avg"] == 4
     assert "decode_batch_size" not in summary["talker"]
     assert summary["thinker"]["observed_retractions"] == 1
-    assert summary["thinker"]["num_retracted_reqs"]["count"] == 2
+    assert "num_retracted_reqs" not in summary["thinker"]
+    for metric, value in {
+        "kv_usage": 0.75,
+        "kv_used_tokens": 75,
+        "kv_available_tokens": 10,
+        "kv_evictable_tokens": 15,
+        "request_build_pending": 2,
+        "request_build_backlog": 18,
+    }.items():
+        assert summary["thinker"][metric] == {
+            "count": 2,
+            "avg": value,
+            "p50": value,
+            "p95": value,
+            "max": value,
+        }
     assert report["stage_breakdown"] == [
         row.to_dict() for row in stage_breakdown(source=tmp_path)
     ]
@@ -137,7 +158,8 @@ def test_serving_summary_code2wav_subbatches_and_optional_metadata(
     assert summary["execution_mode"] == {"cuda_graph": 1, "eager": 4}
     assert summary["graph_hit_count"] == 1
     assert summary["graph_fallback_count"] == 3
-    assert summary["graph_hit_rate"] == 0.25
+    assert summary["graph_attempt_success_rate"] == 0.25
+    assert "graph_hit_rate" not in summary
     assert summary["fallback_reason"] == {"ineligible": 2, "key_miss": 1}
     assert summary["effective_batch_size"]["avg"] == 1.8
     assert summary["inbox_depth"]["count"] == 1
@@ -186,7 +208,7 @@ def test_serving_summary_serial_code2wav(tmp_path: Path) -> None:
         "max": 1,
     }
     assert summary["execution_mode"] == {"cuda_graph": 1, "eager": 2}
-    assert summary["graph_hit_rate"] == 0.5
+    assert summary["graph_attempt_success_rate"] == 0.5
     assert summary["fallback_reason"] == {"ineligible": 1}
     assert summary["inbox_depth"]["count"] == 3
     assert summary["active_request_count"]["avg"] == 16
@@ -204,7 +226,7 @@ def test_serving_summary_intentional_eager_and_cli(tmp_path: Path, capsys) -> No
     )
     summary = build_report(tmp_path)["serving_summary"]["code2wav"]
     assert summary["graph_fallback_count"] == 0
-    assert summary["graph_hit_rate"] is None
+    assert summary["graph_attempt_success_rate"] is None
     assert main([str(tmp_path), "--format", "table"]) == 0
     assert "=== Serving Summary ===" in capsys.readouterr().out
     assert main([str(tmp_path)]) == 0

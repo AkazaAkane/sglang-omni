@@ -20,6 +20,7 @@ import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
 from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import ReqKvInfo
+from sglang.srt.managers.scheduler_components.pool_stats_observer import PoolStats
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
 
@@ -55,10 +56,19 @@ def test_scheduler_batch_snapshot(monkeypatch, mode, expected) -> None:
     scheduler = OmniScheduler.__new__(OmniScheduler)
     scheduler.running_batch = SimpleNamespace(reqs=[1, 2])
     scheduler.waiting_queue = [1, 2, 3]
-    scheduler.metrics_reporter = SimpleNamespace(num_retracted_reqs=4)
-    scheduler.token_to_kv_pool_allocator = SimpleNamespace(
-        available_size=lambda: 25,
+    pool = PoolStats(
+        full_num_used=50,
+        full_token_usage=0.5,
+        full_available_size=25,
+        full_evictable_size=25,
+        is_hybrid_swa=True,
+        swa_token_usage=0.8,
     )
+    scheduler.pool_stats_observer = SimpleNamespace(
+        get_pool_stats=Mock(return_value=pool)
+    )
+    scheduler.pending_request_builds = {"r3": None}
+    scheduler.backlogged_request_build_payloads = deque(["r4", "r5"])
     monkeypatch.setattr(
         omni_scheduler_module,
         "get_recorder",
@@ -73,14 +83,19 @@ def test_scheduler_batch_snapshot(monkeypatch, mode, expected) -> None:
         )
     )
     emit.assert_called_once()
+    scheduler.pool_stats_observer.get_pool_stats.assert_called_once_with()
     assert emit.call_args.kwargs["metadata"] == {
         "batch_size": 2,
         "batch_type": expected,
         "forward_mode": mode.name,
         "running_requests": 2,
         "waiting_requests": 3,
-        "num_retracted_reqs": 4,
+        "kv_usage": 0.8,
+        "kv_used_tokens": 50,
         "kv_available_tokens": 25,
+        "kv_evictable_tokens": 25,
+        "request_build_pending": 1,
+        "request_build_backlog": 2,
     }
 
 

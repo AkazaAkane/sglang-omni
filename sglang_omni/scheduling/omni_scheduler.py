@@ -1876,6 +1876,7 @@ class OmniScheduler:
             batch_type = "prefill"
         else:
             batch_type = mode.name.lower()
+        pool = self.pool_stats_observer.get_pool_stats()
         _emit_event(
             request_id=batch.reqs[0].rid,
             stage=None,
@@ -1886,8 +1887,12 @@ class OmniScheduler:
                 "forward_mode": mode.name,
                 "running_requests": len(self.running_batch.reqs),
                 "waiting_requests": len(self.waiting_queue),
-                "num_retracted_reqs": self.metrics_reporter.num_retracted_reqs,
-                "kv_available_tokens": self.token_to_kv_pool_allocator.available_size(),
+                "kv_usage": pool.get_max_pool_usage(),
+                "kv_used_tokens": pool.full_num_used,
+                "kv_available_tokens": pool.full_available_size,
+                "kv_evictable_tokens": pool.full_evictable_size,
+                "request_build_pending": len(self.pending_request_builds),
+                "request_build_backlog": len(self.backlogged_request_build_payloads),
             },
         )
 

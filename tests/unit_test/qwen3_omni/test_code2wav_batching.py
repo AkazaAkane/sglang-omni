@@ -1105,7 +1105,7 @@ def test_batch_end_event_reports_mixed_sub_batch_execution(monkeypatch) -> None:
     )
     summary = serving_summary({"req-a": timeline})["code2wav"]
     assert summary["effective_batch_size"]["avg"] == 1.5
-    assert summary["graph_hit_rate"] == 0.5
+    assert summary["graph_attempt_success_rate"] == 0.5
     assert summary["graph_fallback_count"] == 1
     assert summary["fallback_reason"] == {"key_miss": 1}
 
