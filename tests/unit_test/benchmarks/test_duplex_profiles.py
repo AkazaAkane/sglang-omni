@@ -22,6 +22,21 @@ from tests.unit_test.benchmarks.test_duplex_v15_runner import write_dataset
 MINICPMO = "minicpmo-native-pr2377"
 
 
+def test_minicpmo_audio_deployment_without_session_timeout() -> None:
+    records = minicpmo_trace()
+    grant = next(
+        r["event"]["session"]["sglang"]["granted"]
+        for r in records
+        if r["event"]["type"] == "session.updated"
+    )
+    grant["output_modalities"] = ["audio"]
+    grant["limits"].pop("session_timeout_s")
+    assert (
+        evaluate_trace(records, scenario="continuous", profile=MINICPMO)["status"]
+        == "pass"
+    )
+
+
 def minicpmo_trace() -> list[dict]:
     records = []
 
@@ -226,7 +241,7 @@ def test_minicpmo_pair_capture_and_replay(tmp_path: Path) -> None:
             async for raw in ws:
                 event = json.loads(raw)
                 if event["type"] == "session.update":
-                    assert event["session"]["output_modalities"] == ["audio", "text"]
+                    assert event["session"]["output_modalities"] == ["audio"]
                     grant = copy.deepcopy(GRANTED)
                     grant.update(
                         native_unit_ms=1000,

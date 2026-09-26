@@ -510,7 +510,7 @@ select the same profile during offline replay.
 | Profile | Native unit | Output PCM16 | Response completion | Output length |
 | --- | --- | --- | --- | --- |
 | `nemotron-voicechat-pr2188` | 80 ms | 22,050 Hz, audio | After input EOS | Fixed samples per input unit |
-| `minicpmo-native-pr2377` | 1,000 ms | 24,000 Hz, audio and text | Natural turn end or input EOS | Variable; silence is valid |
+| `minicpmo-native-pr2377` | 1,000 ms | 24,000 Hz, audio required | Natural turn end or input EOS | Variable; silence is valid |
 
 Both profiles check the declared capabilities, causal receipts, complete input
 accounting, native units, terminal ordering, EOS drain and session closure.
@@ -631,6 +631,12 @@ Alternatively, `score` invokes an OpenAI-compatible judge when all of
 or judgements leave behavior unscored while timing is still reported. Results
 are per-category label distributions and scored coverage, with no pass/fail
 mapping.
+
+For the separate v1.5 reference scoring path, see
+[Reference evaluation](duplex/REFERENCE.md). It exports fixed observation
+windows, uses pinned external reference scripts with Parakeet ASR, and preserves
+the selected population, technical exclusions and pending behavior labels.
+Its interval metrics differ from the event-anchored scores above.
 
 ## Full-Duplex-Bench v1.0 turn-taking tasks (VoiceChat)
 

@@ -28,7 +28,7 @@ PROFILES: dict[ProfileName, DuplexProfile] = {
     "minicpmo-native-pr2377": DuplexProfile(
         native_unit_ms=1000,
         output_sample_rate=24000,
-        output_modalities=("audio", "text"),
+        output_modalities=("audio",),
         stop_requires_eos=False,
         continuous_output=False,
     ),

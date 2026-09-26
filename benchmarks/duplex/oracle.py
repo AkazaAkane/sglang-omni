@@ -18,7 +18,6 @@ INPUT_SAMPLE_RATE = 16000
 INPUT_BYTES_PER_MS = INPUT_SAMPLE_RATE * 2 / 1000
 INPUT_BYTES_PER_S = INPUT_SAMPLE_RATE * 2
 MAX_ADMISSION_ATTEMPTS = 3
-SESSION_TIMEOUT_S = 240
 
 REQUIRED_CAPABILITIES = {
     "interaction": "native",
@@ -160,7 +159,6 @@ def evaluate_trace(
             "type": "audio/pcm",
             "rate": contract.output_sample_rate,
         },
-        "output_modalities": list(contract.output_modalities),
     }
     violations: list[str] = []
 
@@ -290,11 +288,12 @@ def evaluate_trace(
                             and grant.get(key) == expected,
                             f"unsupported capability: {key}",
                         )
-                    limits = grant.get("limits")
+                    modalities = grant.get("output_modalities")
                     check(
-                        isinstance(limits, dict)
-                        and limits.get("session_timeout_s") == SESSION_TIMEOUT_S,
-                        "unsupported capability: limits.session_timeout_s",
+                        isinstance(modalities, list)
+                        and all(isinstance(item, str) for item in modalities)
+                        and set(contract.output_modalities).issubset(modalities),
+                        "unsupported capability: output_modalities",
                     )
                 updated = True
             elif typ == "sglang.input_audio.accepted":
