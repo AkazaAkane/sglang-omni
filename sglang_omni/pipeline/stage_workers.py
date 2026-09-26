@@ -143,6 +143,7 @@ class StageWorkerProcessSpec:
     # note (Dayuxiaoshui): root logger level for the spawned process. The
     # launcher passes its own root level so --log-level reaches every stage.
     log_level: int = logging.INFO
+    cpu_threads: int | None = None
 
 
 def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
@@ -205,6 +206,10 @@ def patched_spawn_env(
         "SGLANG_OMNI_PLATFORM_SPEC": get_platform_spec(current_platform),
         **(extra_env or {}),
     }
+    if spec.cpu_threads is not None and "OMP_NUM_THREADS" not in os.environ:
+        updates["OMP_NUM_THREADS"] = str(spec.cpu_threads)
+    else:
+        pass
     backup = {key: os.environ.get(key) for key in updates}
     try:
         for key, value in updates.items():

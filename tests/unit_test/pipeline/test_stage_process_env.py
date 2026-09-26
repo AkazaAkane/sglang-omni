@@ -52,6 +52,24 @@ def worker_spec(*stage_specs: StageLaunchConfig) -> StageWorkerProcessSpec:
     )
 
 
+@pytest.mark.parametrize("parent_threads", [None, "4"])
+def test_spawn_env_applies_cpu_plan_and_respects_parent(
+    monkeypatch: pytest.MonkeyPatch, parent_threads: str | None
+) -> None:
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    if parent_threads is not None:
+        monkeypatch.setenv("OMP_NUM_THREADS", parent_threads)
+    else:
+        pass
+    spec = worker_spec(StageLaunchConfig(stage_name="preprocess"))
+    spec.cpu_threads = 9
+
+    with patched_spawn_env(spec):
+        assert os.environ["OMP_NUM_THREADS"] == (parent_threads or "9")
+
+    assert os.environ.get("OMP_NUM_THREADS") == parent_threads
+
+
 def test_tp_process_env_maps_logical_gpu_through_visible_devices() -> None:
     env = cuda_platform.get_stage_process_env(
         tp_spec(gpu_id=1), {"CUDA_VISIBLE_DEVICES": "3,4"}

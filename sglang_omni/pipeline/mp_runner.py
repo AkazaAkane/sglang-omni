@@ -43,6 +43,7 @@ from sglang_omni.pipeline.stage_workers import (
     StageWorkerProcessSpec,
 )
 from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
+from sglang_omni.utils.cpu import effective_cpu_count
 from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
@@ -239,6 +240,38 @@ def build_stage_groups(
     attach_process_memory_fraction_defaults(groups)
 
     return groups
+
+
+def apply_cpu_thread_plan(groups: list[StageGroup]) -> dict[str, int]:
+    """Share CPU capacity equally across the final OS worker processes."""
+    process_specs = [spec for group in groups for spec in group.process_specs]
+    if not process_specs:
+        return {}
+    else:
+        pass
+
+    cpu_budget = effective_cpu_count()
+    process_count = len(process_specs)
+    threads_per_process = max(1, cpu_budget // process_count)
+    plan = {}
+    for spec in process_specs:
+        spec.cpu_threads = threads_per_process
+        plan[spec.process_name] = threads_per_process
+
+    allocations = {
+        spec.process_name: {
+            "threads": spec.cpu_threads,
+            "stages": [stage.stage_name for stage in spec.stage_specs],
+        }
+        for spec in process_specs
+    }
+    logger.info(
+        f"CPU thread plan: budget={cpu_budget} processes={process_count} "
+        f"threads_per_process={threads_per_process} "
+        f"overcommitted={str(process_count > cpu_budget).lower()} "
+        f"allocations={allocations}"
+    )
+    return plan
 
 
 def attach_process_memory_fraction_defaults(groups: list[StageGroup]) -> None:
@@ -597,6 +630,7 @@ class MultiProcessPipelineRunner:
                 process_plan=prep.process_plan,
                 replica_topology=prep.replica_topology,
             )
+            apply_cpu_thread_plan(groups)
 
             # Note (Jiaxin Deng): roles are assigned before the coordinator
             # binds and before any child is spawned, so an unshareable topology
