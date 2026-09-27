@@ -81,10 +81,6 @@ def test_discovery_covers_four_subsets_deterministically(tmp_path: Path) -> None
     assert "current_turn_text" not in backchannel.metadata
     assert backchannel.event_span_s == [0.1, 0.3]
     assert backchannel.paths["clean_input"] == "user_backchannel/2/clean_input.wav"
-    assert set(backchannel.transcripts) == {
-        "input_transcript",
-        "clean_input_transcript",
-    }
     assert backchannel.audio["input"]["duration_s"] == pytest.approx(0.64)
     assert inventory(tmp_path) == {
         "declared": {

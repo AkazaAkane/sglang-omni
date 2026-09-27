@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.metadata
 import json
 import logging
@@ -169,3 +170,44 @@ def transcribe_run(
             entry.update(status="error", error=f"{type(exc).__name__}: {exc}")
         write_json(output / "transcripts.json", result)
     return result
+
+
+def transcribe_command(arguments: argparse.Namespace) -> int:
+    import whisper
+
+    if not arguments.model_path.is_file():
+        raise FileNotFoundError(
+            f"--model-path is not a local checkpoint: {arguments.model_path}"
+        )
+    else:
+        model = whisper.load_model(str(arguments.model_path), device=arguments.device)
+        result = transcribe_run(
+            arguments.run,
+            arguments.output,
+            model=model,
+            model_path=arguments.model_path,
+            device=arguments.device,
+            timeline=arguments.timeline,
+        )
+        statuses = [entry["status"] for entry in result["variants"]]
+        print(
+            json.dumps(
+                {status: statuses.count(status) for status in sorted(set(statuses))}
+            )
+        )
+        return 1 if "error" in statuses else 0
+
+
+def add_transcribe_arguments(
+    parser: argparse.ArgumentParser, timeline_help: str
+) -> None:
+    parser.add_argument("--run", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--model-path", type=Path, required=True, help="Local Whisper .pt checkpoint"
+    )
+    parser.add_argument("--device", required=True)
+    parser.add_argument(
+        "--timeline", choices=TIMELINES, default="simulated_playout", help=timeline_help
+    )
+    parser.set_defaults(handler=transcribe_command)

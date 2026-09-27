@@ -100,9 +100,7 @@ async def run_pairs(
     )
     entries = []
     for sample in samples:
-        # Note (wenyao): run.json is rewritten per variant; omit bulky transcripts.
         entry = {**asdict(sample), "variants": {}}
-        entry.pop("transcripts", None)
         for variant, key in variants.items():
             entry["variants"][variant] = {
                 "directory": str(Path("samples") / sample.directory / variant),

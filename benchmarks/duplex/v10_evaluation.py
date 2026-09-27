@@ -29,6 +29,7 @@ EVALUATION_FILES = (
     "benchmarks/duplex/v10_dataset.py",
     "benchmarks/duplex/v10_scoring.py",
     "benchmarks/duplex/v10_evaluation.py",
+    "benchmarks/duplex/v15_scoring.py",
 )
 
 

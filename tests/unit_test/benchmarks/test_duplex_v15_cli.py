@@ -205,6 +205,7 @@ def test_score_without_asr_keeps_timing_and_leaves_behavior_unscored(
 class FakeWhisper:
     def __init__(self) -> None:
         self.calls: list[tuple[int, dict]] = []
+        self.loads: list[tuple[str, str]] = []
 
     def transcribe(self, audio: np.ndarray, **options) -> dict:
         self.calls.append((len(audio), options))
@@ -235,29 +236,37 @@ class FakeWhisper:
         }
 
 
-def test_transcribe_then_offline_judgements_score_behavior(
-    recorded: dict, fake_vad: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    run = recorded["run"]
+def transcribe_cli(
+    run: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    model: FakeWhisper,
+) -> tuple[int, dict[str, int]]:
     model_path = tmp_path / "tiny.pt"
     model_path.write_bytes(b"weights")
-    fake = FakeWhisper()
-    loads = []
 
     def load_model(name: str, device: str) -> FakeWhisper:
-        loads.append((name, device))
-        return fake
+        model.loads.append((name, device))
+        return model
 
     monkeypatch.setitem(
         sys.modules, "whisper", types.SimpleNamespace(load_model=load_model)
     )
-    code, counts = run_cli(
+    return run_cli(
         ["transcribe", "--run", str(run), "--output", str(tmp_path / "asr")]
         + ["--model-path", str(model_path), "--device", "cpu"]
     )
 
+
+def test_transcribe_then_offline_judgements_score_behavior(
+    recorded: dict, fake_vad: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = recorded["run"]
+    fake = FakeWhisper()
+    code, counts = transcribe_cli(run, tmp_path, monkeypatch, fake)
+
     assert code == 0 and counts == {"not_qualified:invalid": 4, "transcribed": 4}
-    assert loads == [(str(model_path), "cpu")]
+    assert fake.loads == [(str(tmp_path / "tiny.pt"), "cpu")]
     assert fake.calls[0][1] == {
         "language": "en",
         "word_timestamps": True,
@@ -363,17 +372,7 @@ def test_transcribe_keeps_going_after_per_variant_asr_failures(
     recorded: dict, fake_vad: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run = recorded["run"]
-    model_path = tmp_path / "tiny.pt"
-    model_path.write_bytes(b"weights")
-    monkeypatch.setitem(
-        sys.modules,
-        "whisper",
-        types.SimpleNamespace(load_model=lambda name, device: FlakyWhisper()),
-    )
-    code, counts = run_cli(
-        ["transcribe", "--run", str(run), "--output", str(tmp_path / "asr")]
-        + ["--model-path", str(model_path), "--device", "cpu"]
-    )
+    code, counts = transcribe_cli(run, tmp_path, monkeypatch, FlakyWhisper())
 
     assert code == 1
     assert counts == {"error": 2, "not_qualified:invalid": 4, "transcribed": 2}
@@ -423,17 +422,7 @@ def test_transcribe_rejects_invalid_word_times_instead_of_clipping(
     recorded: dict, fake_vad: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run = recorded["run"]
-    model_path = tmp_path / "tiny.pt"
-    model_path.write_bytes(b"weights")
-    monkeypatch.setitem(
-        sys.modules,
-        "whisper",
-        types.SimpleNamespace(load_model=lambda name, device: BadTimesWhisper()),
-    )
-    code, counts = run_cli(
-        ["transcribe", "--run", str(run), "--output", str(tmp_path / "asr")]
-        + ["--model-path", str(model_path), "--device", "cpu"]
-    )
+    code, counts = transcribe_cli(run, tmp_path, monkeypatch, BadTimesWhisper())
 
     assert code == 1
     assert counts == {"error": 3, "not_qualified:invalid": 4, "transcribed": 1}
@@ -487,17 +476,7 @@ def test_media_timeline_is_distinct_and_rejects_mismatched_transcripts(
         "/overlap/output-media.wav"
     )
 
-    model_path = tmp_path / "tiny.pt"
-    model_path.write_bytes(b"weights")
-    monkeypatch.setitem(
-        sys.modules,
-        "whisper",
-        types.SimpleNamespace(load_model=lambda name, device: FakeWhisper()),
-    )
-    run_cli(
-        ["transcribe", "--run", str(run), "--output", str(tmp_path / "asr")]
-        + ["--model-path", str(model_path), "--device", "cpu"]
-    )
+    transcribe_cli(run, tmp_path, monkeypatch, FakeWhisper())
     with pytest.raises(ValueError, match="timeline"):
         main(
             [
@@ -531,17 +510,7 @@ def test_api_judge_runs_only_with_all_flags(
         )
     assert error.value.code == 2 and not (tmp_path / "x").exists()
 
-    model_path = tmp_path / "tiny.pt"
-    model_path.write_bytes(b"weights")
-    monkeypatch.setitem(
-        sys.modules,
-        "whisper",
-        types.SimpleNamespace(load_model=lambda name, device: FakeWhisper()),
-    )
-    run_cli(
-        ["transcribe", "--run", str(run), "--output", str(tmp_path / "asr")]
-        + ["--model-path", str(model_path), "--device", "cpu"]
-    )
+    transcribe_cli(run, tmp_path, monkeypatch, FakeWhisper())
     requests = []
 
     def reply(request: httpx.Request) -> httpx.Response:

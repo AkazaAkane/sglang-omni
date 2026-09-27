@@ -26,6 +26,7 @@ from benchmarks.duplex.client import (
     run_session,
 )
 from benchmarks.duplex.oracle import evaluate_trace
+from tests.unit_test.benchmarks.test_duplex_oracle import GRANTED
 
 FIXTURE_PCM = b"\x02\x00" * 10240
 FIXTURE_PACKETS = 8
@@ -46,40 +47,6 @@ PeerMode = Literal[
     "linger",
     "close_without_update",
 ]
-
-GRANTED = {
-    "interaction": "native",
-    "native_full_duplex": True,
-    "proactive_output": False,
-    "turn_control": [None],
-    "client_commit": False,
-    "input_modalities": ["audio"],
-    "output_modalities": ["audio"],
-    "input_audio_format": {"type": "audio/pcm", "rate": 16000},
-    "output_audio_format": {"type": "audio/pcm", "rate": 22050},
-    "native_unit_ms": 80,
-    "first_unit_ms": 80,
-    "microturn_ms": None,
-    "tail_policy": "pad",
-    "supports_server_interrupt": False,
-    "supports_truncate": False,
-    "supports_resume": False,
-    "partial_style": "append_only",
-    "pressure_policy": "reject",
-    "strict_order": True,
-    "rejections": [],
-    "limits": {
-        "max_input_bytes": 1920000,
-        "max_input_chunks": 128,
-        "max_output_bytes": 4194304,
-        "max_output_events": 256,
-        "max_responses": 128,
-        "max_segments": 256,
-        "max_history_chars": 65536,
-        "session_timeout_s": 240,
-        "cleanup_timeout_s": 30,
-    },
-}
 
 
 class DuplexPeer:

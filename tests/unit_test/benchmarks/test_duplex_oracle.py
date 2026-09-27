@@ -201,18 +201,13 @@ def event_of(records: list[dict], typ: str) -> dict:
     return next(record["event"] for record in records if record["event"]["type"] == typ)
 
 
-def test_current_session_protocol_without_epoch_or_resource_receipt() -> None:
+def test_known_good_trace_and_hand_calculated_metrics() -> None:
     trace = trace_fixture()
     assert all("epoch" not in r["event"].get("sglang", {}) for r in trace)
     assert "cancel_is_noop" not in GRANTED
     assert "held" not in event_of(trace, "session.closed")
+    assert "sglang" not in event_of(trace, "sglang.input_audio.accepted")
     result = evaluate_trace(trace, scenario="continuous")
-    assert result["violations"] == []
-    assert result["status"] == "pass"
-
-
-def test_known_good_trace_and_hand_calculated_metrics() -> None:
-    result = evaluate_trace(trace_fixture(), scenario="continuous")
     assert result["status"] == "pass"
     assert result["violations"] == []
     assert all(result["coverage"].values())
@@ -267,14 +262,6 @@ def test_wire_mutations_fail(typ: str, key: str, value: object, violation: str) 
     result = evaluate_trace(trace, scenario="continuous")
     assert result["status"] == "fail"
     assert any(violation in item for item in result["violations"])
-
-
-def test_control_receipt_does_not_require_sglang_envelope() -> None:
-    trace = trace_fixture()
-    event_of(trace, "sglang.input_audio.accepted").pop("sglang", None)
-    result = evaluate_trace(trace, scenario="continuous")
-    assert result["status"] == "pass"
-    assert result["violations"] == []
 
 
 @pytest.mark.parametrize(

@@ -300,7 +300,6 @@ def test_behavior_request_bytes_match_official_template(tmp_path):
         .decode(),
     }
     assert user == {"role": "user", "content": EXPECTED_USER_MSG}
-    assert request["asr_word_overlap_unused_by_official"] == 0
     assert all(label in system["content"] for label in reference_core.C_LABELS)
     assert (
         reference_behavior.build_request(official, tmp_path)["request_hash"]

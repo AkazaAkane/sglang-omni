@@ -41,7 +41,6 @@ OPTIONAL_FILES = {
     "current_turn": "current_turn.wav",
     "background": "background.wav",
 }
-TRANSCRIPT_KEYS = ("input_transcript", "clean_input_transcript")
 SAMPLE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
@@ -54,7 +53,6 @@ class Sample:
     paths: dict[str, str] = field(default_factory=dict)
     sha256: dict[str, str] = field(default_factory=dict)
     audio: dict[str, dict[str, int | float | str]] = field(default_factory=dict)
-    transcripts: dict[str, JsonValue] = field(default_factory=dict)
     event_span_s: list[float] | None = None
     errors: list[str] = field(default_factory=list)
 
@@ -145,8 +143,8 @@ def validate_sample(root: Path, subset: str, name: str) -> Sample:
             except (UnicodeError, ValueError) as exc:
                 sample.errors.append(f"{Path(relative).name} is not valid JSON: {exc}")
                 continue
-            if key in TRANSCRIPT_KEYS:
-                sample.transcripts[key] = value
+            if key != "metadata":
+                continue
             elif isinstance(value, dict):
                 sample.metadata = value
             else:
@@ -175,33 +173,53 @@ def validate_sample(root: Path, subset: str, name: str) -> Sample:
     return sample
 
 
+def select_sample_ids(
+    root: Path,
+    subsets: tuple[str, ...],
+    sample_ids: list[str] | None,
+    max_per_subset: int | None,
+) -> list[str]:
+    if sample_ids is not None and max_per_subset is not None:
+        raise ValueError("sample_ids and max_per_subset are mutually exclusive")
+    elif max_per_subset is not None and max_per_subset <= 0:
+        raise ValueError("max_per_subset must be positive")
+    else:
+        sample_names, _ = list_sample_dirs(root.resolve(), subsets)
+        available_ids = [
+            f"{subset}/{name}" for subset in subsets for name in sample_names[subset]
+        ]
+        if sample_ids is None:
+            return [
+                f"{subset}/{name}"
+                for subset in subsets
+                for name in sample_names[subset][:max_per_subset]
+            ]
+        else:
+            duplicate_ids = sorted(
+                sample_id
+                for sample_id, count in Counter(sample_ids).items()
+                if count > 1
+            )
+            unknown_ids = sorted(set(sample_ids) - set(available_ids))
+            if duplicate_ids:
+                raise ValueError(f"duplicate requested sample IDs: {duplicate_ids}")
+            elif unknown_ids:
+                raise ValueError(f"unknown requested sample IDs: {unknown_ids}")
+            else:
+                requested_ids = set(sample_ids)
+                return [
+                    sample_id
+                    for sample_id in available_ids
+                    if sample_id in requested_ids
+                ]
+
+
 def discover_samples(
     root: Path,
     sample_ids: list[str] | None = None,
     max_per_subset: int | None = None,
 ) -> list[Sample]:
     """Select samples deterministically; malformed selections carry their errors."""
-    if sample_ids is not None and max_per_subset is not None:
-        raise ValueError("sample_ids and max_per_subset are mutually exclusive")
-    if max_per_subset is not None and max_per_subset <= 0:
-        raise ValueError("max_per_subset must be positive")
+    selected = select_sample_ids(root, SUBSETS, sample_ids, max_per_subset)
     root = root.resolve()
-    names, _ = list_sample_dirs(root)
-    available = [f"{subset}/{name}" for subset in SUBSETS for name in names[subset]]
-    if sample_ids is None:
-        selected = [
-            f"{subset}/{name}"
-            for subset in SUBSETS
-            for name in names[subset][:max_per_subset]
-        ]
-    else:
-        duplicates = sorted(i for i, n in Counter(sample_ids).items() if n > 1)
-        unknown = sorted(set(sample_ids) - set(available))
-        if duplicates:
-            raise ValueError(f"duplicate requested sample IDs: {duplicates}")
-        elif unknown:
-            raise ValueError(f"unknown requested sample IDs: {unknown}")
-        else:
-            requested = set(sample_ids)
-            selected = [i for i in available if i in requested]
     return [validate_sample(root, *sample_id.split("/", 1)) for sample_id in selected]

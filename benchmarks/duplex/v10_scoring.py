@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import statistics
 from collections import Counter
 
 import numpy as np
@@ -12,7 +11,7 @@ from scipy.interpolate import interp1d
 from scipy.spatial.distance import jensenshannon
 
 from benchmarks.duplex.v10_dataset import Task
-from benchmarks.duplex.v15_scoring import canonical_hash
+from benchmarks.duplex.v15_scoring import canonical_hash, describe
 
 SCORING_VERSION = "fdb-v10-synthetic-v1"
 # Note (Jeffro): Upstream takeover rule; output this short counts as a backchannel, not a turn.
@@ -149,18 +148,6 @@ def score_backchannel(
         "backchannels": backchannels,
         "backchannel_rate_per_s": len(backchannels) / input_duration_s,
         "timing_jsd": jsd,
-    }
-
-
-def describe(values: list[float]) -> dict[str, JsonValue]:
-    if not values:
-        return {"n": 0, "mean": None, "median": None, "min": None, "max": None}
-    return {
-        "n": len(values),
-        "mean": statistics.fmean(values),
-        "median": statistics.median(values),
-        "min": min(values),
-        "max": max(values),
     }
 
 

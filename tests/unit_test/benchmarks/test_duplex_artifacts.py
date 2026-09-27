@@ -262,7 +262,8 @@ def test_not_exercised_is_not_pass_or_qualified_timing(
     assert result["cases"][1]["coverage"] == {"input_output_overlap": False}
 
 
-def test_replay_grades_real_traces_with_the_real_oracle(tmp_path: Path) -> None:
+@pytest.fixture
+def real_recorded_run(tmp_path: Path) -> Path:
     pcm = b"\x00\x00" * 2560
     (tmp_path / "input.pcm").write_bytes(pcm)
     cases = [
@@ -298,24 +299,28 @@ def test_replay_grades_real_traces_with_the_real_oracle(tmp_path: Path) -> None:
         )
     )
     for case in cases:
-        records = trace_fixture()
-        if case["id"] == "continuous-repeat":
-            records.insert(
-                0,
-                {
-                    "direction": "admission",
-                    "time_s": 99.0,
-                    "event": {
-                        "type": "connection_denied",
-                        "http_status": 503,
-                        "attempt": 1,
-                    },
-                },
-            )
         (tmp_path / case["trace_file"]).write_text(
-            "".join(json.dumps(record) + "\n" for record in records)
+            "".join(json.dumps(record) + "\n" for record in trace_fixture())
         )
-    result = artifacts.replay_run(tmp_path)
+    return tmp_path
+
+
+def test_replay_grades_real_traces_with_the_real_oracle(
+    real_recorded_run: Path,
+) -> None:
+    records = trace_fixture()
+    records.insert(
+        0,
+        {
+            "direction": "admission",
+            "time_s": 99.0,
+            "event": {"type": "connection_denied", "http_status": 503, "attempt": 1},
+        },
+    )
+    (real_recorded_run / "continuous-repeat.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in records)
+    )
+    result = artifacts.replay_run(real_recorded_run)
     assert result["summary"]["selected"] == 2
     assert result["summary"]["passed"] == 2
     assert result["cases"][1]["metrics"]["admission_denials"] == 1
@@ -332,54 +337,20 @@ def test_replay_grades_real_traces_with_the_real_oracle(tmp_path: Path) -> None:
 
 
 def test_replay_counts_healthy_case_beside_uncorrelated_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    real_recorded_run: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
 ) -> None:
-    pcm = b"\x00\x00" * 2560
-    (tmp_path / "input.pcm").write_bytes(pcm)
-    cases = [
-        {
-            "id": "continuous",
-            "scenario": "continuous",
-            "trace_file": "continuous.jsonl",
-        },
-        {
-            "id": "continuous-repeat",
-            "scenario": "continuous",
-            "trace_file": "continuous-repeat.jsonl",
-        },
-    ]
-    (tmp_path / "manifest.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "profile": "nemotron-voicechat-pr2188",
-                "source": {"harness_git_head": "recorded-revision"},
-                "server": {
-                    "revision": "e1b9c9c674b1187918593257906ee6e8cc6a13da",
-                    "revision_source": "operator_supplied",
-                },
-                "config": {"packet_ms": 80},
-                "input": {
-                    "file": "input.pcm",
-                    "sha256": hashlib.sha256(pcm).hexdigest(),
-                    "sample_rate": 16000,
-                },
-                "cases": cases,
-            }
-        )
+    records = trace_fixture()
+    next(
+        record["event"]
+        for record in records
+        if record["event"]["type"] == "sglang.input_audio.accepted"
+    ).pop("client_event_id")
+    (real_recorded_run / "continuous-repeat.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in records)
     )
-    for case in cases:
-        records = trace_fixture()
-        if case["id"] == "continuous-repeat":
-            next(
-                record["event"]
-                for record in records
-                if record["event"]["type"] == "sglang.input_audio.accepted"
-            ).pop("client_event_id")
-        (tmp_path / case["trace_file"]).write_text(
-            "".join(json.dumps(record) + "\n" for record in records)
-        )
-    monkeypatch.setattr(sys, "argv", ["artifacts", str(tmp_path)])
+    monkeypatch.setattr(sys, "argv", ["artifacts", str(real_recorded_run)])
     with pytest.raises(SystemExit) as stopped:
         artifacts.main()
     assert stopped.value.code == 1

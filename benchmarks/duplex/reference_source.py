@@ -120,11 +120,7 @@ def soundfile_load_wav(sr_target: int) -> Callable[[Path], Any]:
 
 
 def load_official_behavior(path: Path, instruction_path: Path) -> types.SimpleNamespace:
-    """Extract pure helpers and the exact user-payload f-string from eval_behavior.py by AST.
-
-    This avoids importing the module (and the OpenAI client) while executing the
-    file's own code objects; call constants are checked against the source.
-    """
+    # Note (wenyao): Importing the reference module would initialize an unused OpenAI client.
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
     funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
@@ -133,7 +129,6 @@ def load_official_behavior(path: Path, instruction_path: Path) -> types.SimpleNa
         "extract_json",
         "parse_eval",
         "stats_by_axis",
-        "check_overlap",
     )
     namespace = {
         "json": json,
@@ -180,29 +175,6 @@ def load_official_behavior(path: Path, instruction_path: Path) -> types.SimpleNa
     )
     ast.fix_missing_locations(lam)
     template = eval(compile(lam, str(path), "eval"), {})
-
-    judge = funcs["eval_behavior"]
-    consts = {
-        t.id: n.value.value
-        for n in ast.walk(judge)
-        if isinstance(n, ast.Assign)
-        for t in n.targets
-        if isinstance(t, ast.Name) and isinstance(n.value, ast.Constant)
-    }
-    create = [
-        n
-        for n in ast.walk(judge)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "create"
-    ]
-    keywords = sorted(k.arg for k in create[0].keywords) if len(create) == 1 else None
-    if (
-        consts.get("MODEL_NAME") != JUDGE_MODEL
-        or consts.get("seed") != 1
-        or keywords != ["messages", "model", "seed"]
-    ):
-        raise RuntimeError(f"eval_behavior call contract changed: {consts} {keywords}")
 
     with open(instruction_path, "r", encoding="utf-8") as fp:
         instruction = fp.read()

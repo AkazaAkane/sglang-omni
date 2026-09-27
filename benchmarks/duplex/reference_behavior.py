@@ -69,9 +69,6 @@ def build_request(official: SimpleNamespace, sample: Path) -> dict:
                 "clean_output.json",
             )
         },
-        "asr_word_overlap_unused_by_official": official.check_overlap(
-            docs["input_noisy"]["chunks"], docs["output_noisy"]["chunks"]
-        ),
         "request_hash": canonical_hash(
             {
                 "body": body,
@@ -89,18 +86,18 @@ def behavior_units(engine: Engine, only: list[str]) -> tuple[list[str], dict[str
         if not all(engine.eligible(sid, v) for v in VARIANTS):
             blocked[sid] = "variant_ineligible"
             continue
-        receipts = engine.sample_dir(sid) / "receipts"
-        states = [
-            (
-                read_json(receipts / f"asr-{s}.json")["status"]
-                if (receipts / f"asr-{s}.json").exists()
-                else "not_run"
+        receipt_directory = engine.sample_dir(sid) / "receipts"
+        receipts = {
+            stem: (
+                read_json(receipt_directory / f"asr-{stem}.json")
+                if (receipt_directory / f"asr-{stem}.json").exists()
+                else {"status": "not_run"}
             )
-            for s in ("input", "clean_input", "output", "clean_output")
-        ]
+            for stem in ("input", "clean_input", "output", "clean_output")
+        }
+        states = [receipt["status"] for receipt in receipts.values()]
         if all(s == "ok" for s in states):
-            for stem in ("input", "clean_input", "output", "clean_output"):
-                receipt = read_json(receipts / f"asr-{stem}.json")
+            for stem, receipt in receipts.items():
                 transcript = engine.sample_dir(sid) / f"{stem}.json"
                 if sha256_file(transcript) != receipt["transcript_sha256"]:
                     blocked[sid] = "stale_request"

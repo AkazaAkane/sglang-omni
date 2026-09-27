@@ -6,7 +6,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -14,7 +13,7 @@ from typing import Literal
 import soundfile
 from pydantic import JsonValue
 
-from benchmarks.duplex.v15_dataset import list_sample_dirs
+from benchmarks.duplex.v15_dataset import list_sample_dirs, select_sample_ids
 
 Task = Literal["pause_handling", "turn_taking", "user_interruption", "backchannel"]
 
@@ -149,26 +148,6 @@ def discover_samples(
     max_per_subset: int | None = None,
 ) -> list[Sample]:
     """Select samples deterministically; malformed selections carry their errors."""
-    if sample_ids is not None and max_per_subset is not None:
-        raise ValueError("sample_ids and max_per_subset are mutually exclusive")
-    if max_per_subset is not None and max_per_subset <= 0:
-        raise ValueError("max_per_subset must be positive")
+    selected = select_sample_ids(root, SUBSETS, sample_ids, max_per_subset)
     root = root.resolve()
-    names, _ = list_sample_dirs(root, SUBSETS)
-    available = [f"{subset}/{name}" for subset in SUBSETS for name in names[subset]]
-    if sample_ids is None:
-        selected = [
-            f"{subset}/{name}"
-            for subset in SUBSETS
-            for name in names[subset][:max_per_subset]
-        ]
-    else:
-        duplicates = sorted(i for i, n in Counter(sample_ids).items() if n > 1)
-        unknown = sorted(set(sample_ids) - set(available))
-        if duplicates:
-            raise ValueError(f"duplicate requested sample IDs: {duplicates}")
-        if unknown:
-            raise ValueError(f"unknown requested sample IDs: {unknown}")
-        requested = set(sample_ids)
-        selected = [i for i in available if i in requested]
     return [validate_sample(root, *sample_id.split("/", 1)) for sample_id in selected]

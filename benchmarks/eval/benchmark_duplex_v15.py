@@ -13,7 +13,7 @@ from benchmarks.duplex.artifacts import add_server_identity_args, server_identit
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES
 from benchmarks.duplex.v15_evaluation import TIMELINES, accounting, load_run, score_run
 from benchmarks.duplex.v15_runner import run_pairs
-from benchmarks.duplex.v15_transcribe import transcribe_run
+from benchmarks.duplex.v15_transcribe import add_transcribe_arguments
 
 
 def record(args: argparse.Namespace) -> int:
@@ -42,29 +42,6 @@ def record(args: argparse.Namespace) -> int:
     return (
         0 if summary["variant_status"] == {"pass": summary["selected_variants"]} else 1
     )
-
-
-def transcribe(args: argparse.Namespace) -> int:
-    import whisper
-
-    if not args.model_path.is_file():
-        raise FileNotFoundError(
-            f"--model-path is not a local checkpoint: {args.model_path}"
-        )
-    model = whisper.load_model(str(args.model_path), device=args.device)
-    result = transcribe_run(
-        args.run,
-        args.output,
-        model=model,
-        model_path=args.model_path,
-        device=args.device,
-        timeline=args.timeline,
-    )
-    statuses = [entry["status"] for entry in result["variants"]]
-    print(
-        json.dumps({status: statuses.count(status) for status in sorted(set(statuses))})
-    )
-    return 1 if "error" in statuses else 0
 
 
 def score(args: argparse.Namespace) -> int:
@@ -158,16 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     transcribe_parser = commands.add_parser(
         "transcribe", help="Word-timestamped Whisper ASR of generated output audio"
     )
-    transcribe_parser.add_argument("--run", type=Path, required=True)
-    transcribe_parser.add_argument("--output", type=Path, required=True)
-    transcribe_parser.add_argument(
-        "--model-path", type=Path, required=True, help="Local Whisper .pt checkpoint"
-    )
-    transcribe_parser.add_argument("--device", required=True)
-    transcribe_parser.add_argument(
-        "--timeline", choices=TIMELINES, default="simulated_playout", help=timeline_help
-    )
-    transcribe_parser.set_defaults(handler=transcribe)
+    add_transcribe_arguments(transcribe_parser, timeline_help)
 
     score_parser = commands.add_parser(
         "score", help="Offline timing and behavior scores"
