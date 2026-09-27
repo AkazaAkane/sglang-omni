@@ -12,8 +12,8 @@ from pathlib import Path
 from benchmarks.duplex import v10_dataset
 from benchmarks.duplex.artifacts import add_server_identity_args, server_identity
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES
+from benchmarks.duplex.run_artifacts import TIMELINES, accounting, load_run
 from benchmarks.duplex.v10_evaluation import RUN_KIND, score_run
-from benchmarks.duplex.v15_evaluation import TIMELINES, accounting, load_run
 from benchmarks.duplex.v15_runner import run_samples
 from benchmarks.duplex.v15_transcribe import add_transcribe_arguments
 

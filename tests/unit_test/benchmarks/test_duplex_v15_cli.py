@@ -14,14 +14,19 @@ import types
 from collections.abc import Iterator
 from pathlib import Path
 
-import httpx
 import numpy as np
 import pytest
 import soundfile
 import websockets
 from websockets.asyncio.server import ServerConnection
 
-from benchmarks.duplex import v15_scoring
+from benchmarks.duplex.run_artifacts import (
+    TIMELINES,
+    Timeline,
+    create_output,
+    load_output_transcripts,
+    load_run,
+)
 from benchmarks.eval.benchmark_duplex_v15 import main
 from tests.unit_test.benchmarks.test_duplex_client import DuplexPeer
 from tests.unit_test.benchmarks.test_duplex_v15_runner import (
@@ -117,11 +122,6 @@ def recorded(tmp_path_factory: pytest.TempPathFactory) -> dict:
     return {"root": root, "run": run, "code": code, "summary": summary}
 
 
-@pytest.fixture
-def fake_vad(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(v15_scoring, "silero_speech_segments", nonzero_segments)
-
-
 def test_record_reports_declared_available_selected_and_failures(
     recorded: dict,
 ) -> None:
@@ -143,63 +143,6 @@ def test_record_reports_declared_available_selected_and_failures(
         ("background_speech/1", "overlap"),
         ("background_speech/1", "clean"),
     }
-
-
-def test_score_without_asr_keeps_timing_and_leaves_behavior_unscored(
-    recorded: dict, fake_vad: None, tmp_path: Path
-) -> None:
-    before = tree_digest(recorded["run"])
-    code, printed = run_cli(
-        ["score", "--run", str(recorded["run"]), "--output", str(tmp_path / "s")]
-    )
-
-    assert code == 0 and tree_digest(recorded["run"]) == before
-    score = json.loads((tmp_path / "s" / "score.json").read_text())
-    assert score["timeline"]["name"] == "simulated_playout"
-    assert score["timeline"]["audio"] == "output-playout.wav"
-    categories = score["timing"]["categories"]
-    assert categories["backchannel"]["eligible"] == 1
-    assert categories["backchannel"]["paired_eligible"] == 1
-    assert categories["interruption"]["paired_eligible"] == 1
-    assert categories["talking_to_other"]["selected"] == 1
-    assert categories["talking_to_other"]["missing"] == 1
-    assert categories["background_speech"]["missing"] == 1
-    assert printed["timing"]["talking_to_other"]["eligible"] == 0
-
-    rows = {row["sample_id"]: row for row in score["samples"]}
-    clean = rows["user_backchannel/1"]["variants"]["clean"]["timing"]
-    assert clean["status"] == "eligible"
-    assert clean["segment_source"]["input"]["audio"].endswith("/clean/input.wav")
-    assert clean["evaluation"] == "clean_reference"
-    playout = recorded["run"] / "samples/user_backchannel/1/clean/output-playout.wav"
-    info = soundfile.info(str(playout))
-    assert clean["output_duration_s"] == info.frames / info.samplerate
-    assert clean["observed_end_s"] >= clean["output_duration_s"]
-    assert clean["observation_complete"] is True
-    assert clean["segment_source"]["output"]["audio"].endswith(
-        "/clean/output-playout.wav"
-    )
-    assert (
-        rows["talking_to_other/1"]["variants"]["overlap"]["unscored_reason"]
-        == "invalid_sample"
-    )
-
-    behavior = score["behavior"]["summary"]["categories"]
-    assert behavior["backchannel"]["scored"] == 0
-    assert behavior["backchannel"]["unscored_reasons"] == {
-        "missing_transcript:clean_output": 1
-    }
-    assert behavior["talking_to_other"]["unscored_reasons"] == {"invalid_sample": 1}
-    missing_clean = rows["background_speech/1"]
-    assert missing_clean["errors"] == ["missing clean_input.wav"]
-    assert missing_clean["behavior_input"]["reason"] == "invalid_sample"
-    assert {v["unscored_reason"] for v in missing_clean["variants"].values()} == {
-        "invalid_sample"
-    }
-    assert behavior["background_speech"]["unscored_reasons"] == {"invalid_sample": 1}
-    inputs = (tmp_path / "s" / "judge-inputs.jsonl").read_text().splitlines()
-    assert {json.loads(line)["status"] for line in inputs} == {"unscorable"}
-    assert len(inputs) == 4
 
 
 class FakeWhisper:
@@ -241,6 +184,7 @@ def transcribe_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     model: FakeWhisper,
+    timeline: Timeline = "simulated_playout",
 ) -> tuple[int, dict[str, int]]:
     model_path = tmp_path / "tiny.pt"
     model_path.write_bytes(b"weights")
@@ -254,14 +198,15 @@ def transcribe_cli(
     )
     return run_cli(
         ["transcribe", "--run", str(run), "--output", str(tmp_path / "asr")]
-        + ["--model-path", str(model_path), "--device", "cpu"]
+        + ["--model-path", str(model_path), "--device", "cpu", "--timeline", timeline]
     )
 
 
-def test_transcribe_then_offline_judgements_score_behavior(
-    recorded: dict, fake_vad: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_transcribe_preserves_audio_and_records_word_evidence(
+    recorded: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run = recorded["run"]
+    before = tree_digest(run)
     fake = FakeWhisper()
     code, counts = transcribe_cli(run, tmp_path, monkeypatch, fake)
 
@@ -286,75 +231,7 @@ def test_transcribe_then_offline_judgements_score_behavior(
     raw = json.loads((tmp_path / "asr" / entry["raw_file"]).read_text())
     assert raw["segments"][0]["words"][1]["probability"] == 0.8
 
-    first = tmp_path / "first"
-    run_cli(
-        ["score", "--run", str(run), "--output", str(first)]
-        + ["--transcripts", str(tmp_path / "asr")]
-    )
-    ready = [
-        json.loads(line)
-        for line in (first / "judge-inputs.jsonl").read_text().splitlines()
-        if json.loads(line)["status"] == "ready"
-    ]
-    assert [item["sample_id"] for item in ready] == SELECTED[:2]
-    labels = dict(zip(SELECTED[:2], ("C_RESUME", "C_RESPOND")))
-    noisy = ready[0]["payload"]["transcripts"]["noisy_output"]
-    assert noisy["timestamp_source"] == "asr_aligned"
-    assert (
-        ready[0]["payload"]["transcripts"]["noisy_input"]["timestamp_source"]
-        == "provided_aligned"
-    )
-
-    judgements = tmp_path / "judgements.jsonl"
-    judgements.write_text(
-        "".join(
-            json.dumps(
-                {
-                    "sample_id": item["sample_id"],
-                    "input_hash": item["input_hash"],
-                    "rubric_version": item["rubric_version"],
-                    "label": labels[item["sample_id"]],
-                    "evidence": "okay",
-                    "first_new_segment": {
-                        "text": word["text"],
-                        "start_s": word["start_s"],
-                        "end_s": word["end_s"],
-                    },
-                    "annotator": {"id": "fixture", "kind": "human"},
-                }
-            )
-            + "\n"
-            for item in ready
-            for word in item["payload"]["transcripts"]["noisy_output"]["words"][1:]
-        )
-    )
-    code, printed = run_cli(
-        ["score", "--run", str(run), "--output", str(tmp_path / "judged")]
-        + ["--transcripts", str(tmp_path / "asr"), "--judgements", str(judgements)]
-        + ["--segments", str(first / "segments.json")]
-    )
-
-    score = json.loads((tmp_path / "judged" / "score.json").read_text())
-    by_label = {
-        category: printed["behavior"][category]["label_counts"]
-        for category in ("interruption", "backchannel")
-    }
-    assert by_label["backchannel"][labels["user_backchannel/1"]] == 1
-    assert by_label["interruption"][labels["user_interruption/1"]] == 1
-    assert printed["behavior"]["talking_to_other"]["scored"] == 0
-    assert (
-        score["behavior"]["asr"]["asr"]["model_sha256"]
-        == transcripts["asr"]["model_sha256"]
-    )
-    source = score["samples"][0]["variants"]["overlap"]["timing"]["segment_source"][
-        "output"
-    ]
-    assert source["kind"] == "supplied_segments"
-    assert source["entry_source"]["kind"] == "silero_vad"
-    assert (
-        score["timing"]["categories"]
-        == json.loads((first / "score.json").read_text())["timing"]["categories"]
-    )
+    assert tree_digest(run) == before
 
 
 class FlakyWhisper(FakeWhisper):
@@ -369,7 +246,7 @@ class FlakyWhisper(FakeWhisper):
 
 
 def test_transcribe_keeps_going_after_per_variant_asr_failures(
-    recorded: dict, fake_vad: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    recorded: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run = recorded["run"]
     code, counts = transcribe_cli(run, tmp_path, monkeypatch, FlakyWhisper())
@@ -389,18 +266,6 @@ def test_transcribe_keeps_going_after_per_variant_asr_failures(
     assert crashed["error"] == "RuntimeError: CUDA error: device-side assert"
     assert "raw_file" not in crashed and "transcript" not in crashed
 
-    run_cli(
-        ["score", "--run", str(run), "--output", str(tmp_path / "s")]
-        + ["--transcripts", str(tmp_path / "asr")]
-    )
-    behavior = json.loads((tmp_path / "s" / "score.json").read_text())["behavior"]
-    reasons = {
-        row["sample_id"]: row["unscored_reason"]
-        for row in behavior["summary"]["samples"]
-    }
-    assert reasons["user_interruption/1"] == "missing_transcript:clean_output"
-    assert reasons["user_backchannel/1"] == "missing_judgement"
-
 
 class BadTimesWhisper(FakeWhisper):
 
@@ -419,7 +284,7 @@ class BadTimesWhisper(FakeWhisper):
 
 
 def test_transcribe_rejects_invalid_word_times_instead_of_clipping(
-    recorded: dict, fake_vad: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    recorded: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run = recorded["run"]
     code, counts = transcribe_cli(run, tmp_path, monkeypatch, BadTimesWhisper())
@@ -442,119 +307,52 @@ def test_transcribe_rejects_invalid_word_times_instead_of_clipping(
     assert math.isnan(raw["segments"][0]["words"][1]["start"])
     assert valid["transcript"]["chunks"][1]["timestamp"][0] == 0.35
 
-    run_cli(
-        ["score", "--run", str(run), "--output", str(tmp_path / "s")]
-        + ["--transcripts", str(tmp_path / "asr")]
-    )
-    inputs = [
-        json.loads(line)
-        for line in (tmp_path / "s" / "judge-inputs.jsonl").read_text().splitlines()
-    ]
-    assert {item["status"] for item in inputs} == {"unscorable"}
 
-
-def test_media_timeline_is_distinct_and_rejects_mismatched_transcripts(
-    recorded: dict, fake_vad: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("timeline", ["media", "simulated_playout"])
+def test_transcribe_selects_audio_timeline_and_rejects_mismatched_evidence(
+    recorded: dict,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    timeline: Timeline,
 ) -> None:
     run = recorded["run"]
-    run_cli(
-        [
-            "score",
-            "--run",
-            str(run),
-            "--output",
-            str(tmp_path / "media"),
-            "--timeline",
-            "media",
-        ]
+    code, _ = transcribe_cli(run, tmp_path, monkeypatch, FakeWhisper(), timeline)
+    transcripts = json.loads((tmp_path / "asr" / "transcripts.json").read_text())
+    assert code == 0 and transcripts["timeline"] == timeline
+    assert all(
+        entry["audio"].endswith(TIMELINES[timeline]["audio"])
+        for entry in transcripts["variants"]
     )
-    score = json.loads((tmp_path / "media" / "score.json").read_text())
-    assert score["timeline"]["name"] == "media"
-    record = score["samples"][0]["variants"]["overlap"]["timing"]
-    assert record["timeline"] == "media"
-    assert record["segment_source"]["output"]["audio"].endswith(
-        "/overlap/output-media.wav"
+    _, _, manifest_sha256 = load_run(run)
+    evidence, _ = load_output_transcripts(
+        tmp_path / "asr", run, manifest_sha256, timeline
     )
-
-    transcribe_cli(run, tmp_path, monkeypatch, FakeWhisper())
+    assert len(evidence) == 4
+    other_timeline = "media" if timeline == "simulated_playout" else "simulated_playout"
     with pytest.raises(ValueError, match="timeline"):
-        main(
-            [
-                "score",
-                "--run",
-                str(run),
-                "--output",
-                str(tmp_path / "bad"),
-                "--timeline",
-                "media",
-            ]
-            + ["--transcripts", str(tmp_path / "asr")]
-        )
+        load_output_transcripts(tmp_path / "asr", run, manifest_sha256, other_timeline)
 
 
-def test_api_judge_runs_only_with_all_flags(
-    recorded: dict, fake_vad: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_retired_score_command_is_rejected_without_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    run = recorded["run"]
+    output = tmp_path / "score"
     with pytest.raises(SystemExit) as error:
-        main(
-            [
-                "score",
-                "--run",
-                str(run),
-                "--output",
-                str(tmp_path / "x"),
-                "--judge-model",
-                "m",
-            ]
-        )
-    assert error.value.code == 2 and not (tmp_path / "x").exists()
-
-    transcribe_cli(run, tmp_path, monkeypatch, FakeWhisper())
-    requests = []
-
-    def reply(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        content = json.dumps(
-            {"label": "C_UNKNOWN", "evidence": "okay", "first_new_segment": None}
-        )
-        return httpx.Response(
-            200, json={"model": "m", "choices": [{"message": {"content": content}}]}
-        )
-
-    real_client = httpx.Client
-    monkeypatch.setattr(
-        httpx, "Client", lambda: real_client(transport=httpx.MockTransport(reply))
-    )
-    monkeypatch.setenv("JUDGE_KEY", "secret")
-    code, printed = run_cli(
-        ["score", "--run", str(run), "--output", str(tmp_path / "judged")]
-        + [
-            "--transcripts",
-            str(tmp_path / "asr"),
-            "--judge-base-url",
-            "http://judge/v1",
-        ]
-        + ["--judge-model", "m", "--judge-api-key-env", "JUDGE_KEY"]
-    )
-
-    assert code == 0 and len(requests) == 2
-    assert requests[0].headers["authorization"] == "Bearer secret"
-    assert printed["behavior"]["backchannel"]["label_counts"]["C_UNKNOWN"] == 1
-    lines = (tmp_path / "judged" / "judgements.jsonl").read_text().splitlines()
-    assert {json.loads(line)["provenance"]["model"] for line in lines} == {"m"}
-    assert "secret" not in (tmp_path / "judged" / "score.json").read_text()
+        main(["score", "--run", str(tmp_path / "run"), "--output", str(output)])
+    assert error.value.code == 2
+    assert "invalid choice: 'score'" in capsys.readouterr().err
+    assert not output.exists()
 
 
 def test_outputs_never_overwrite_or_live_inside_the_run(
-    recorded: dict, fake_vad: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    recorded: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run = recorded["run"]
     with pytest.raises(ValueError, match="outside the run"):
-        main(["score", "--run", str(run), "--output", str(run / "score")])
+        create_output(run / "score", run)
     (tmp_path / "taken").mkdir()
     with pytest.raises(FileExistsError):
-        main(["score", "--run", str(run), "--output", str(tmp_path / "taken")])
+        create_output(tmp_path / "taken", run)
 
     loads = []
     monkeypatch.setitem(

@@ -3,15 +3,23 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
+import json
+import math
+import statistics
 from collections import Counter
+from math import gcd
+from pathlib import Path
 
 import numpy as np
+import soundfile
 from pydantic import JsonValue
 from scipy.interpolate import interp1d
+from scipy.signal import resample_poly
 from scipy.spatial.distance import jensenshannon
 
 from benchmarks.duplex.v10_dataset import Task
-from benchmarks.duplex.v15_scoring import canonical_hash, describe
 
 SCORING_VERSION = "fdb-v10-synthetic-v1"
 # Note (Jeffro): Upstream takeover rule; output this short counts as a backchannel, not a turn.
@@ -35,9 +43,115 @@ SCORING_CONFIG = {
     "backchannel_timing": "backchannels binned at 0.2 s over the input; Jensen-Shannon "
     "distance to the human reference resampled to the same bins, 1 when none",
 }
-SCORING_CONFIG_HASH = canonical_hash(SCORING_CONFIG)
 WORD_TASKS: tuple[Task, ...] = ("pause_handling", "turn_taking", "user_interruption")
 TASKS: tuple[Task, ...] = (*WORD_TASKS, "backchannel")
+
+
+# Note (wenyao): Float rounding can put segment ends just past the audio duration.
+DURATION_TOLERANCE_S = 1e-3
+SILERO_VAD_CONFIG = {
+    "sampling_rate": 16000,
+    "threshold": 0.5,
+    "min_speech_duration_ms": 250,
+    "min_silence_duration_ms": 100,
+    "speech_pad_ms": 30,
+    "onnx": True,
+}
+
+
+def canonical_hash(value: JsonValue) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+SCORING_CONFIG_HASH = canonical_hash(SCORING_CONFIG)
+
+
+def check_interval(start_s: float, end_s: float, duration_s: float, name: str) -> None:
+    if not all(math.isfinite(value) for value in (start_s, end_s, duration_s)):
+        raise ValueError(f"{name} has a non-finite time")
+    elif not 0 <= start_s < end_s <= duration_s + DURATION_TOLERANCE_S:
+        raise ValueError(
+            f"{name} [{start_s}, {end_s}] is reversed or outside [0, {duration_s}]"
+        )
+
+
+def validate_segments(
+    segments: list[list[float]], duration_s: float, name: str
+) -> list[tuple[float, float]]:
+    """Return ordered, disjoint, in-range speech segments or raise ValueError."""
+    checked = []
+    previous_end = 0.0
+    for index, segment in enumerate(segments):
+        if len(segment) != 2:
+            raise ValueError(f"{name} segment {index} must be [start, end]")
+        start_s, end_s = float(segment[0]), float(segment[1])
+        check_interval(start_s, end_s, duration_s, f"{name} segment {index}")
+        if start_s < previous_end:
+            raise ValueError(f"{name} segment {index} overlaps or is out of order")
+        checked.append((start_s, end_s))
+        previous_end = end_s
+    return checked
+
+
+def silero_speech_segments(wav_path: str | Path) -> dict[str, JsonValue]:
+    """Detect speech in a PCM WAV with the frozen Silero VAD configuration."""
+    # Note (wenyao): Word-timestamp scoring and tests do not need torch or Silero.
+    import torch
+    from silero_vad import get_speech_timestamps, load_silero_vad
+
+    info = soundfile.info(str(wav_path))
+    if info.format != "WAV" or not info.subtype.startswith("PCM"):
+        raise ValueError(
+            f"{wav_path} is {info.format}/{info.subtype}, expected PCM WAV"
+        )
+    audio, sample_rate = soundfile.read(str(wav_path), dtype="float32", always_2d=True)
+    audio = audio.mean(axis=1)
+    duration_s = len(audio) / sample_rate
+    target_rate = SILERO_VAD_CONFIG["sampling_rate"]
+    if sample_rate != target_rate:
+        divisor = gcd(sample_rate, target_rate)
+        audio = resample_poly(audio, target_rate // divisor, sample_rate // divisor)
+    timestamps = get_speech_timestamps(
+        torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)),
+        load_silero_vad(onnx=SILERO_VAD_CONFIG["onnx"]),
+        sampling_rate=target_rate,
+        threshold=SILERO_VAD_CONFIG["threshold"],
+        min_speech_duration_ms=SILERO_VAD_CONFIG["min_speech_duration_ms"],
+        min_silence_duration_ms=SILERO_VAD_CONFIG["min_silence_duration_ms"],
+        speech_pad_ms=SILERO_VAD_CONFIG["speech_pad_ms"],
+    )
+    segments = [
+        [item["start"] / target_rate, min(item["end"] / target_rate, duration_s)]
+        for item in timestamps
+    ]
+    return {
+        "segments": [
+            list(pair) for pair in validate_segments(segments, duration_s, "vad")
+        ],
+        "duration_s": duration_s,
+        "sample_rate": sample_rate,
+        "vad": {
+            "package": "silero-vad",
+            "version": importlib.metadata.version("silero-vad"),
+            "config": SILERO_VAD_CONFIG,
+            "config_hash": canonical_hash(SILERO_VAD_CONFIG),
+        },
+    }
+
+
+def describe(values: list[float]) -> dict[str, JsonValue]:
+    if not values:
+        return {"n": 0, "mean": None, "median": None, "min": None, "max": None}
+    else:
+        return {
+            "n": len(values),
+            "mean": statistics.fmean(values),
+            "median": statistics.median(values),
+            "min": min(values),
+            "max": max(values),
+        }
 
 
 def takes_turn(chunks: list[dict[str, JsonValue]]) -> bool:

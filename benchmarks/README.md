@@ -594,9 +594,10 @@ profile does not change their definitions or imply paper-identical evaluation.
 `input.wav` (with the overlapping event) and `clean_input.wav` (without it),
 each sent in a fresh `continuous` session. `response.cancel` is never sent; any
 stop or resume is the model's own behavior. The public [MIT-licensed dataset](https://github.com/DanielLin94144/Full-Duplex-Bench/blob/3e799c45a045256f47d5f1c9cda90157e2d2ec9e/v1_v1.5/dataset/README.md) is
-acquired separately; no audio is vendored here. Scoring is this repository's
-own implementation, not the upstream evaluation code, and it covers core
-timing and behavior only — not the prosody/UTMOS suite.
+acquired separately; no audio is vendored here. Use the
+[reference evaluation workflow](duplex/REFERENCE.md) for v1.5 scoring. It uses
+reference ASR with pinned external timing and behavior code; source and license
+requirements are documented there. Prosody/UTMOS evaluation is outside this workflow.
 
 ```bash
 # Record: full dataset by default; --max-per-subset N or repeated --sample-id for a smoke run
@@ -609,16 +610,10 @@ python -m benchmarks.eval.benchmark_duplex_v15 record \
     --dataset-revision <release or archive digest> \
     --sample-id user_backchannel/1 --sample-id user_interruption/1
 
-# Optional independent ASR of the generated audio (pip install openai-whisper; local checkpoint only)
+# Optional diagnostic Whisper transcripts; reference scoring uses its own Parakeet ASR
 python -m benchmarks.eval.benchmark_duplex_v15 transcribe \
     --run results/fdb15-run --output results/fdb15-asr \
     --model-path /models/whisper/large-v3.pt --device cuda
-
-# Score offline (pip install silero-vad, or pass --segments)
-python -m benchmarks.eval.benchmark_duplex_v15 score \
-    --run results/fdb15-run --output results/fdb15-score \
-    --transcripts results/fdb15-asr \
-    [--judgements judgements.jsonl] [--segments results/earlier-score/segments.json]
 ```
 
 Each variant records an input pacing map: every append's client send time
@@ -632,7 +627,9 @@ uncertainty to every latency.
 backchannel archive holds 98 of the declared 99 — plus selected pairs,
 attempted variants and every non-passing variant. It exits 0 only when every
 selected variant passes. Invalid samples, errors and protocol failures stay in
-the selected denominator and never feed metrics.
+the selected denominator; only passing variants feed qualified protocol metrics.
+Reference export separately determines whether each fixed observation window is
+eligible for speech scoring.
 
 Each variant directory keeps the sent `input.pcm`/`input.wav`, the raw
 `continuous.jsonl` trace, `report.json`, the concatenated model audio
@@ -643,43 +640,17 @@ so initial delay, gaps and queued playback are kept. It is not
 acoustic timing and not paper-identical latency. `transcript.json` holds the
 server's own generated text deltas and is not ASR.
 
-`score` writes a new directory and never modifies the run. Timing
-(`fdb-v15-event-v1`, an event-anchored metric of its own, not bit-identical to
-the upstream timing script) runs Silero VAD with a frozen, hashed configuration
-(package version recorded) on each qualified variant's input and output, and
-places the stop/response decision on the metadata event window. The clean
-variant is scored on the same window as a no-event reference, without the
-overlap input-speech check. `--timeline simulated_playout` (default) uses
-`output-playout.wav`; `--timeline media` uses `output-media.wav` from session
-start and ignores receipt time. `segments.json` records the segments used, so a
-rescore can pass it back through `--segments`.
+`transcribe` remains available for diagnostic Whisper transcripts of the generated
+audio, using a local checkpoint and retaining raw responses and model identity.
+These transcripts are not inputs to reference scoring: that workflow uses
+Parakeet for all four input/output roles across overlap and clean runs.
 
-Behavior needs four word-timestamped transcripts per pair: the dataset's
-aligned `input.json`/`clean_input.json` and Whisper transcripts of both
-outputs (`language=en`, `word_timestamps=True`, `temperature=0`; the raw
-response and model SHA-256 are kept). `transcribe` never downloads weights.
-Word times are copied verbatim, never clipped. A non-finite, negative,
-reversed or out-of-order word, or one ending more than 1 ms past the audio
-end, makes that variant a recorded transcription error, while the other
-variants continue. Its raw response is kept, and the command exits nonzero.
-Behavior inputs are built only for valid samples whose two variants both
-qualified; every other selected pair is written as unscorable, with a reason.
-`score` writes `judge-inputs.jsonl` with a `ready` or `unscorable` status and
-input hash per sample; labels come from `--judgements` (offline JSONL rows with
-`sample_id`, `input_hash`, `rubric_version`, `label`, `evidence`, `annotator`,
-and `first_new_segment`). The segment cites contiguous output words with
-`text`, `start_s` and `end_s`; only `C_UNKNOWN` permits a null segment.
-Alternatively, `score` invokes an OpenAI-compatible judge when all of
-`--judge-base-url`, `--judge-model` and `--judge-api-key-env` are given. Missing ASR
-or judgements leave behavior unscored while timing is still reported. Results
-are per-category label distributions and scored coverage, with no pass/fail
-mapping.
-
-For the separate v1.5 reference scoring path, see
-[Reference evaluation](duplex/REFERENCE.md). It exports fixed observation
-windows, uses pinned external reference scripts with Parakeet ASR, and preserves
-the selected population, technical exclusions and pending behavior labels.
-Its interval metrics differ from the event-anchored scores above.
+Follow [reference evaluation](duplex/REFERENCE.md) to export the recording, run
+ASR and timing, optionally judge behavior, and summarize the results. Each phase
+preserves the selected population, technical exclusions and pending labels.
+The former event-anchored `benchmark_duplex_v15 score` command is removed;
+reference intervals have different definitions, so retain historical
+`fdb-v15-event-v1` results under their original version rather than relabeling them.
 
 ## Full-Duplex-Bench v1.0 turn-taking tasks (VoiceChat)
 

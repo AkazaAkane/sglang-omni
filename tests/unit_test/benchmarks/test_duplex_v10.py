@@ -9,10 +9,11 @@ import sys
 import types
 from pathlib import Path
 
+import numpy as np
 import pytest
 import soundfile
 
-from benchmarks.duplex import v10_scoring, v15_scoring
+from benchmarks.duplex import v10_scoring
 from benchmarks.duplex.v10_dataset import (
     DECLARED_COUNTS,
     SUBSETS,
@@ -307,7 +308,7 @@ def test_record_transcribe_and_score_every_task(
     )
     assert code == 0 and counts == {"not_qualified:invalid": 1, "transcribed": 4}
 
-    monkeypatch.setattr(v15_scoring, "silero_speech_segments", nonzero_segments)
+    monkeypatch.setattr(v10_scoring, "silero_speech_segments", nonzero_segments)
     reference = tmp_path / "icc_gt_distribution.json"
     reference.write_text(json.dumps({"1": [0.5, 0.5]}))
     code, printed = run_cli(
@@ -331,3 +332,34 @@ def test_record_transcribe_and_score_every_task(
     reasons = {row["sample_id"]: row["unscored_reason"] for row in score["samples"]}
     assert reasons["candor_turn_taking/1"] == "invalid_sample"
     assert score["backchannel_reference"]["path"] == str(reference.resolve())
+
+
+@pytest.mark.parametrize(
+    "segments",
+    [
+        [[2.0, 1.0]],
+        [[1.0, 3.0], [2.0, 4.0]],
+        [[float("nan"), 1.0]],
+        [[1.0, 11.0]],
+        [[-0.1, 1.0]],
+    ],
+)
+def test_vad_segments_reject_invalid_boundaries(segments: list[list[float]]) -> None:
+    with pytest.raises(ValueError):
+        v10_scoring.validate_segments(segments, 10.0, "output")
+
+
+def test_silero_path_records_provenance(tmp_path: Path) -> None:
+    pytest.importorskip("silero_vad")
+    path = tmp_path / "silence.wav"
+    soundfile.write(path, np.zeros(22050, dtype=np.float32), 22050, subtype="PCM_16")
+    result = v10_scoring.silero_speech_segments(path)
+    assert result["segments"] == []
+    assert result["duration_s"] == pytest.approx(1.0)
+    assert result["vad"]["config"] == v10_scoring.SILERO_VAD_CONFIG
+    float_path = tmp_path / "float.wav"
+    soundfile.write(
+        float_path, np.zeros(16000, dtype=np.float32), 16000, subtype="FLOAT"
+    )
+    with pytest.raises(ValueError):
+        v10_scoring.silero_speech_segments(float_path)

@@ -8,12 +8,9 @@ from pathlib import Path
 
 from pydantic import JsonValue
 
-from benchmarks.duplex import v10_scoring, v15_scoring
+from benchmarks.duplex import v10_scoring
 from benchmarks.duplex.artifacts import source_fingerprint
-from benchmarks.duplex.v10_dataset import Task
-from benchmarks.duplex.v10_scoring import TASKS
-from benchmarks.duplex.v15_audio import write_json
-from benchmarks.duplex.v15_evaluation import (
+from benchmarks.duplex.run_artifacts import (
     TIMELINES,
     Timeline,
     accounting,
@@ -22,6 +19,9 @@ from benchmarks.duplex.v15_evaluation import (
     load_output_transcripts,
     load_run,
 )
+from benchmarks.duplex.v10_dataset import Task
+from benchmarks.duplex.v10_scoring import TASKS
+from benchmarks.duplex.v15_audio import write_json
 
 RUN_KIND = "full-duplex-bench-v1.0"
 VARIANT = "input"
@@ -29,7 +29,7 @@ EVALUATION_FILES = (
     "benchmarks/duplex/v10_dataset.py",
     "benchmarks/duplex/v10_scoring.py",
     "benchmarks/duplex/v10_evaluation.py",
-    "benchmarks/duplex/v15_scoring.py",
+    "benchmarks/duplex/run_artifacts.py",
 )
 
 
@@ -70,7 +70,7 @@ def score_run(
 
     def onset_vad(output_wav: Path) -> dict[str, JsonValue]:
         if output_wav not in segment_cache:
-            detected = v15_scoring.silero_speech_segments(output_wav)
+            detected = v10_scoring.silero_speech_segments(output_wav)
             segment_cache[output_wav] = {
                 "audio": str(output_wav.relative_to(run_dir)),
                 "audio_sha256": file_sha256(output_wav),

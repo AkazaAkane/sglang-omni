@@ -18,21 +18,21 @@ from scipy.signal import resample_poly
 
 from benchmarks.duplex.artifacts import source_fingerprint
 from benchmarks.duplex.profiles import PROFILES
-from benchmarks.duplex.v15_audio import write_json
-from benchmarks.duplex.v15_evaluation import (
+from benchmarks.duplex.run_artifacts import (
     TIMELINES,
     Timeline,
     create_output,
     file_sha256,
     load_run,
 )
+from benchmarks.duplex.v15_audio import write_json
 
 logger = logging.getLogger(__name__)
 
 TRANSCRIBE_FILES = (
     "benchmarks/duplex/v15_audio.py",
     "benchmarks/eval/benchmark_duplex_v15.py",
-    "benchmarks/duplex/v15_evaluation.py",
+    "benchmarks/duplex/run_artifacts.py",
     "benchmarks/duplex/v15_transcribe.py",
 )
 WHISPER_SAMPLE_RATE = 16000

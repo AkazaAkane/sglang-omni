@@ -1,9 +1,16 @@
 # Full-Duplex-Bench v1.5 reference evaluation
 
 Use this path to evaluate recorded full-duplex speech with the reference ASR,
-timing formulas and behavior prompt. It complements the event-anchored
-`benchmark_duplex_v15 score` command. Dataset integration, a passing session
-protocol and correct conversational behavior are separate results.
+timing formulas and behavior prompt. This is the v1.5 scoring workflow; dataset
+integration, a passing session protocol and correct conversational behavior are
+separate results.
+
+The former event-anchored `benchmark_duplex_v15 score` command is removed. For
+existing recordings, use the `benchmark_duplex_reference` phases below:
+`export`, `asr`, `timing`, optionally `prepare-judge`/`judge`, then `summarize`.
+Write fresh scoring directories and preserve old `fdb-v15-event-v1` results.
+Reference whole-file intervals use different definitions; old scores must not
+be relabeled or silently compared as the same metric.
 
 ## Dependencies and source identity
 
@@ -50,6 +57,10 @@ python -m benchmarks.eval.benchmark_duplex_reference export \
 Both native profiles request audio; server text can be retained when available,
 but independent ASR provides scoring transcripts. Session deadlines are enforced
 by the client. An optional server limit is not assumed to equal 240 seconds.
+
+`benchmark_duplex_v15 transcribe` remains an optional Whisper diagnostic. Its
+output is not used here: reference ASR transcribes all four input/output roles
+across the overlap and clean recordings with Parakeet.
 
 Export reads source artifacts without changing them and requires a new output
 directory. `--dataset-root` rechecks normalization and includes uncaptured dataset
