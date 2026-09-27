@@ -12,13 +12,13 @@ from pathlib import Path
 from benchmarks.duplex.artifacts import add_server_identity_args, server_identity
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES
 from benchmarks.duplex.v15_evaluation import TIMELINES, accounting, load_run, score_run
-from benchmarks.duplex.v15_runner import run_pairs
+from benchmarks.duplex.v15_runner import run_samples
 from benchmarks.duplex.v15_transcribe import add_transcribe_arguments
 
 
 def record(args: argparse.Namespace) -> int:
     run = asyncio.run(
-        run_pairs(
+        run_samples(
             args.dataset_root,
             url=args.url,
             output=args.output,

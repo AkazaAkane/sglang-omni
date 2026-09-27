@@ -18,7 +18,7 @@ from benchmarks.duplex import v15_runner
 from benchmarks.duplex.client import PACKET_MS
 from benchmarks.duplex.v15_audio import normalize_audio, reconstruct_output
 from benchmarks.duplex.v15_dataset import SUBSETS, discover_samples, inventory
-from benchmarks.duplex.v15_runner import run_pairs
+from benchmarks.duplex.v15_runner import run_samples
 from tests.unit_test.benchmarks.test_duplex_client import FIXTURE_PCM, DuplexPeer
 
 SERVER_REVISION = "e1b9c9c674b1187918593257906ee6e8cc6a13da"
@@ -303,10 +303,10 @@ def test_truncated_or_silent_traces_are_reconstruction_failures(tmp_path: Path) 
     assert not (tmp_path / "output-media.wav").exists()
 
 
-async def serve_pairs(handler, dataset: Path, output: Path, **kwargs) -> dict:
+async def serve_samples(handler, dataset: Path, output: Path, **kwargs) -> dict:
     async with websockets.serve(handler, "127.0.0.1", 0) as server:
         port = server.sockets[0].getsockname()[1]
-        return await run_pairs(
+        return await run_samples(
             dataset,
             url=f"ws://127.0.0.1:{port}/v1/realtime",
             output=output,
@@ -317,7 +317,9 @@ async def serve_pairs(handler, dataset: Path, output: Path, **kwargs) -> dict:
         )
 
 
-def test_run_pairs_records_both_variants_over_a_real_websocket(tmp_path: Path) -> None:
+def test_run_samples_records_both_variants_over_a_real_websocket(
+    tmp_path: Path,
+) -> None:
     dataset, output = tmp_path / "data", tmp_path / "run"
     write_dataset(dataset)
     stereo = dataset / "user_backchannel" / "1" / "clean_input.wav"
@@ -330,7 +332,7 @@ def test_run_pairs_records_both_variants_over_a_real_websocket(tmp_path: Path) -
         peers.append(DuplexPeer())
         await peers[-1].handler(websocket)
 
-    result = asyncio.run(serve_pairs(handler, dataset, output))
+    result = asyncio.run(serve_samples(handler, dataset, output))
 
     assert result["status"] == "complete"
     assert json.loads((output / "run.json").read_text()) == result
@@ -383,7 +385,7 @@ def test_run_pairs_records_both_variants_over_a_real_websocket(tmp_path: Path) -
     assert clean["input_timing"]["max_abs_deviation_s"] <= PACKET_MS / 1000
 
 
-def test_run_pairs_attempts_the_clean_variant_after_overlap_failures(
+def test_run_samples_attempts_the_clean_variant_after_overlap_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dataset, output = tmp_path / "data", tmp_path / "run"
@@ -403,7 +405,7 @@ def test_run_pairs_attempts_the_clean_variant_after_overlap_failures(
 
     monkeypatch.setattr(v15_runner, "run_session", flaky_run_session)
     result = asyncio.run(
-        serve_pairs(
+        serve_samples(
             handler,
             dataset,
             output,
@@ -428,7 +430,7 @@ def test_run_pairs_attempts_the_clean_variant_after_overlap_failures(
     )
 
 
-def test_run_pairs_disqualifies_a_protocol_pass_with_a_late_append(
+def test_run_samples_disqualifies_a_protocol_pass_with_a_late_append(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dataset, output = tmp_path / "data", tmp_path / "run"
@@ -452,7 +454,7 @@ def test_run_pairs_disqualifies_a_protocol_pass_with_a_late_append(
 
     monkeypatch.setattr(v15_runner, "run_session", late_run_session)
     result = asyncio.run(
-        serve_pairs(handler, dataset, output, sample_ids=["user_interruption/1"])
+        serve_samples(handler, dataset, output, sample_ids=["user_interruption/1"])
     )
 
     for state in result["samples"][0]["variants"].values():
@@ -470,7 +472,7 @@ def test_run_pairs_disqualifies_a_protocol_pass_with_a_late_append(
     assert result["summary"]["pairs_qualified"] == 0
 
 
-def test_run_pairs_contains_a_preparation_failure_to_its_variant(
+def test_run_samples_contains_a_preparation_failure_to_its_variant(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dataset, output = tmp_path / "data", tmp_path / "run"
@@ -487,7 +489,7 @@ def test_run_pairs_contains_a_preparation_failure_to_its_variant(
         await DuplexPeer().handler(websocket)
 
     monkeypatch.setattr(v15_runner, "normalize_audio", flaky_normalize)
-    result = asyncio.run(serve_pairs(handler, dataset, output))
+    result = asyncio.run(serve_samples(handler, dataset, output))
 
     manifest = json.loads((output / "manifest.json").read_text())
     assert [s["id"] for s in manifest["samples"]] == [f"{s}/1" for s in SUBSETS]
@@ -500,7 +502,7 @@ def test_run_pairs_contains_a_preparation_failure_to_its_variant(
     assert result["samples"][0]["variants"]["clean"]["status"] == "pass"
 
 
-def test_run_pairs_accounts_a_nonfinite_clean_input_and_runs_its_pair(
+def test_run_samples_accounts_a_nonfinite_clean_input_and_runs_its_pair(
     tmp_path: Path,
 ) -> None:
     dataset, output = tmp_path / "data", tmp_path / "run"
@@ -518,7 +520,7 @@ def test_run_pairs_accounts_a_nonfinite_clean_input_and_runs_its_pair(
         await DuplexPeer().handler(websocket)
 
     result = asyncio.run(
-        serve_pairs(handler, dataset, output, sample_ids=["user_interruption/1"])
+        serve_samples(handler, dataset, output, sample_ids=["user_interruption/1"])
     )
 
     variants = result["samples"][0]["variants"]
@@ -530,11 +532,11 @@ def test_run_pairs_accounts_a_nonfinite_clean_input_and_runs_its_pair(
     assert result["summary"]["variants_selected"] == 2
 
 
-def test_run_pairs_accounts_inputs_the_deadline_cannot_meet(tmp_path: Path) -> None:
+def test_run_samples_accounts_inputs_the_deadline_cannot_meet(tmp_path: Path) -> None:
     dataset, output = tmp_path / "data", tmp_path / "run"
     write_dataset(dataset)
     result = asyncio.run(
-        run_pairs(
+        run_samples(
             dataset,
             url="ws://127.0.0.1:1/v1/realtime",
             output=output,
@@ -549,7 +551,7 @@ def test_run_pairs_accounts_inputs_the_deadline_cannot_meet(tmp_path: Path) -> N
     assert (output / "manifest.json").is_file()
     with pytest.raises(ValueError, match="unknown"):
         asyncio.run(
-            run_pairs(
+            run_samples(
                 dataset,
                 url="ws://127.0.0.1:1/v1/realtime",
                 output=tmp_path / "never",

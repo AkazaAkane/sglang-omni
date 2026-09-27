@@ -14,7 +14,7 @@ from websockets.asyncio.server import ServerConnection
 from benchmarks.duplex.artifacts import replay_run
 from benchmarks.duplex.oracle import evaluate_trace
 from benchmarks.duplex.v15_audio import reconstruct_output
-from benchmarks.duplex.v15_runner import run_pairs
+from benchmarks.duplex.v15_runner import run_samples
 from benchmarks.duplex.v15_transcribe import transcribe_run
 from tests.unit_test.benchmarks.test_duplex_oracle import GRANTED
 from tests.unit_test.benchmarks.test_duplex_v15_runner import write_dataset
@@ -318,7 +318,7 @@ def test_minicpmo_pair_capture_and_replay(tmp_path: Path) -> None:
         output = tmp_path / "recording"
         async with websockets.serve(handler, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
-            result = await run_pairs(
+            result = await run_samples(
                 dataset,
                 url=f"ws://127.0.0.1:{port}",
                 output=output,

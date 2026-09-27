@@ -60,7 +60,7 @@ def summarize(samples: list[dict[str, JsonValue]]) -> dict[str, JsonValue]:
     }
 
 
-async def run_pairs(
+async def run_samples(
     dataset_root: Path,
     *,
     url: str,
