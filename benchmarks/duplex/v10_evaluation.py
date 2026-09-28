@@ -68,7 +68,7 @@ def score_run(
 
     segment_cache: dict[Path, dict[str, JsonValue]] = {}
 
-    def onset_vad(output_wav: Path) -> dict[str, JsonValue]:
+    def speech_segments(output_wav: Path) -> dict[str, JsonValue]:
         if output_wav not in segment_cache:
             detected = v10_scoring.silero_speech_segments(output_wav)
             segment_cache[output_wav] = {
@@ -100,7 +100,7 @@ def score_run(
         chunks = evidence["transcript"]["chunks"]
         output_wav = run_dir / state["directory"] / TIMELINES[timeline]["audio"]
         if task == "backchannel":
-            vad = onset_vad(output_wav)
+            vad = speech_segments(output_wav)
             record = v10_scoring.score_backchannel(
                 sample_id=sample["id"],
                 chunks=chunks,
@@ -119,24 +119,20 @@ def score_run(
                 chunks=chunks,
                 input_duration_s=state["input"]["duration_s"],
             )
-        elif task == "turn_taking":
-            # Note (Jeffro): The annotated span starts where the user turn ends.
+        else:  # turn_taking and user_interruption
             event = sample["events"][0]
-            record = v10_scoring.score_response(
-                sample_id=sample["id"], task=task, chunks=chunks, event_end_s=event[0]
-            )
-        else:
-            event = sample["events"][0]
-            vad = onset_vad(output_wav)
-            speaking = any(start <= event[0] < end for start, end in vad["segments"])
+            vad = speech_segments(output_wav)
+            event_end_s = event[0] if task == "turn_taking" else event[1]
             record = v10_scoring.score_response(
                 sample_id=sample["id"],
                 task=task,
                 chunks=chunks,
-                event_end_s=event[1],
-                speaking_at_onset=speaking,
+                event_start_s=event[0],
+                event_end_s=event_end_s,
+                input_duration_s=state["input"]["duration_s"],
+                output_segments=vad["segments"],
             )
-            record["onset_vad"] = vad
+            record["output_vad"] = vad
         records.append(record)
         rows.append(
             {

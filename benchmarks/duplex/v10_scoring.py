@@ -21,7 +21,7 @@ from scipy.spatial.distance import jensenshannon
 
 from benchmarks.duplex.v10_dataset import Task
 
-SCORING_VERSION = "fdb-v10-synthetic-v1"
+SCORING_VERSION = "fdb-v10-synthetic-v2"
 # Note (Jeffro): Upstream takeover rule; output this short counts as a backchannel, not a turn.
 TAKEOVER_MAX_DURATION_S = 1.0
 TAKEOVER_MAX_WORDS = 3
@@ -32,19 +32,42 @@ BACKCHANNEL_WINDOW_S = 0.2
 BACKCHANNEL_EPSILON = 1e-10
 SCORING_CONFIG = {
     "version": SCORING_VERSION,
-    "takeover": "output longer than 1 s or more than 3 words",
-    "pause_handling": "whole output cropped to the input duration; takeover is a failure",
-    "turn_taking": "output after the user turn end only; takeover is success",
-    "user_interruption": "output after the interruption end only; takeover is success",
-    "latency": "first word starting at or after the event end, minus that end",
-    "coverage": "interruption scored only when the model spoke at the interruption onset",
-    "backchannel": "VAD segment of 1 s or longer, or with more than 2 words, is a "
-    "takeover; a segment over 3 s is a full turn and not a backchannel",
-    "backchannel_timing": "backchannels binned at 0.2 s over the input; Jensen-Shannon "
-    "distance to the human reference resampled to the same bins, 1 when none",
+    "input": "a word list with timestamps, transcribed by ASR from "
+    "output-playout.wav, where each audio chunk sits at the later of its arrival "
+    "time and the end of the previous chunk.",
+    "takeover": "the model took the turn when its output lasts 1 s or longer or has "
+    "more than 3 words, anything shorter counts as a backchannel",
+    "scoring_window": "only words that start before the input audio ends are "
+    "scored, the playout keeps recording while the server drains after EOS, and "
+    "that tail is outside the benchmark",
+    "pause_handling": "the user pauses mid-sentence; a takeover anywhere in the input "
+    "window means the model wrongly treated the pause as the end of the turn; "
+    "lower takeover rate is better",
+    "turn_taking": "the user finishes; words starting at or after the annotated turn "
+    "end count, a takeover is the wanted response, and latency is the first such "
+    "word minus the turn end; if Silero VAD shows the model already speaking at the "
+    "turn end it talked over the user, so the sample is spoke_before_turn_end and excluded",
+    "user_interruption": "the user interrupts the model's answer; words starting at "
+    "or after the interruption end count, a takeover means the model addressed the "
+    "interruption, and latency is the first such word minus the interruption end; "
+    "if VAD shows no model speech at the interruption onset nothing was "
+    "interrupted, so the sample is not_exercised and excluded",
+    "right_censored": "flag only: the model's output speech reaches within 50 ms of "
+    "the input end, so the window may have cut a response short; the score still "
+    "counts",
+    "backchannel": "the user talks for 20-80 s and the model should acknowledge "
+    "without taking over; each Silero VAD segment of the output is a takeover when "
+    "it lasts 1 s or longer or has more than 2 words, a segment over 3 s is a full "
+    "turn and never a backchannel, and the remaining short segments are "
+    "backchannels reported as a rate per second",
+    "backchannel_timing": "backchannel segments are binned at 0.2 s across the "
+    "input and compared with the human timing distribution from upstream "
+    "icc_gt_distribution.json by Jensen-Shannon distance, lower is closer to "
+    "human timing; a sample with no backchannels scores 1",
 }
 WORD_TASKS: tuple[Task, ...] = ("pause_handling", "turn_taking", "user_interruption")
 TASKS: tuple[Task, ...] = (*WORD_TASKS, "backchannel")
+CENSOR_TOLERANCE_S = 0.05
 
 
 # Note (wenyao): Float rounding can put segment ends just past the audio duration.
@@ -184,20 +207,42 @@ def score_response(
     sample_id: str,
     task: Task,
     chunks: list[dict[str, JsonValue]],
+    event_start_s: float,
     event_end_s: float,
-    speaking_at_onset: bool | None = None,
+    input_duration_s: float,
+    output_segments: list[list[float]],
 ) -> dict[str, JsonValue]:
-    """Takeover and latency after the user stops; an interruption of silence is unexercised."""
-    kept = [chunk for chunk in chunks if chunk["timestamp"][0] >= event_end_s]
+    """Takeover and latency after the user stops, gated on what the model was doing.
+
+    A turn-taking sample whose model is already speaking when the user turn ends
+    is not a response; an interruption of a silent model interrupted nothing.
+    """
+    speaking_at_event = any(
+        start <= event_start_s < end for start, end in output_segments
+    )
+    if task == "turn_taking" and speaking_at_event:
+        status = "spoke_before_turn_end"
+    elif task == "user_interruption" and not speaking_at_event:
+        status = "not_exercised"
+    else:
+        status = "scored"
+    kept = [
+        chunk
+        for chunk in chunks
+        if event_end_s <= chunk["timestamp"][0] < input_duration_s
+    ]
     takeover = takes_turn(kept)
     return {
         "version": SCORING_VERSION,
         "config_hash": SCORING_CONFIG_HASH,
         "sample_id": sample_id,
         "task": task,
-        "status": "not_exercised" if speaking_at_onset is False else "scored",
-        "window_s": [event_end_s, None],
-        "speaking_at_onset": speaking_at_onset,
+        "status": status,
+        "window_s": [event_end_s, input_duration_s],
+        "speaking_at_event": speaking_at_event,
+        "right_censored": any(
+            end >= input_duration_s - CENSOR_TOLERANCE_S for _, end in output_segments
+        ),
         "num_words": len(kept),
         "takeover": takeover,
         "latency_s": kept[0]["timestamp"][0] - event_end_s if takeover else None,
@@ -292,6 +337,10 @@ def summarize(
                 else None
             ),
         }
+        if task in ("turn_taking", "user_interruption"):
+            summary["right_censored"] = sum(
+                bool(record["right_censored"]) for record in scored
+            )
         if task == "backchannel":
             summary["backchannel_rate_per_s"] = describe(
                 [r["backchannel_rate_per_s"] for r in scored]

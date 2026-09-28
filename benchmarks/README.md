@@ -688,15 +688,20 @@ python -m benchmarks.eval.benchmark_duplex_v10 score \
     [--backchannel-reference icc_gt_distribution.json]
 ```
 
-`score` (`fdb-v10-synthetic-v1`) reports per-task takeover rate and latency
+`score` (`fdb-v10-synthetic-v2`) reports per-task takeover rate and latency
 from the Whisper word timestamps. A takeover is output lasting at least 1 s or
-more than 3 words, as upstream.
+more than 3 words, as upstream. Every task only counts words starting inside
+the input duration, matching upstream's equal-length `output.wav`.
 
-- Pause handling crops output to the input duration; any takeover is a failure.
+- Pause handling: any takeover inside the input is a failure.
 - Turn taking and user interruption only count words starting after the user
   turn or interruption ends; latency is the first such word's start minus that
-  end, reported only for takeovers. An interruption is `not_exercised` when
-  Silero VAD finds no model speech at its onset.
+  end, reported only for takeovers. Silero VAD on the output gates both: a
+  turn-taking sample whose model is already speaking when the user turn ends is
+  `spoke_before_turn_end` (talking over the user is not a response), and an
+  interruption with no model speech at its onset is `not_exercised`. Neither
+  enters the takeover rate or latency; their counts are reported. A sample whose
+  output speech reaches the input end is flagged `right_censored`.
 - Backchannel runs Silero VAD on the output. It reports backchannel rate and,
   with `--backchannel-reference` (upstream `icc_gt_distribution.json`), the
   Jensen-Shannon distance of 0.2 s binned backchannel timing to the human
@@ -705,7 +710,9 @@ more than 3 words, as upstream.
 
 Selected samples without a record count as `missing`; invalid, unqualified or
 untranscribed samples are listed with an `unscored_reason`. This is not the
-upstream evaluation code. The backchannel classifier differs from upstream
+upstream evaluation code. Upstream has no speaking gates: a model that talks
+through the user turn scores a clamped zero latency there, and every
+interruption sample counts. The backchannel classifier differs from upstream
 `eval_backchannel.py`: segments after the input end are ignored and others are
 clipped to it, and any takeover segment marks the sample (upstream keeps the
 last segment's verdict and stops at the first segment over 3 s). Interruption

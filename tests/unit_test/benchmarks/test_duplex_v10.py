@@ -183,27 +183,60 @@ def test_pause_handling_only_counts_words_inside_the_input() -> None:
     assert record["window_s"] == [0.0, 1.0]
 
 
-def test_response_latency_and_unexercised_interruption() -> None:
-    chunks = [chunk(0.2, 0.4), chunk(1.5, 1.8), chunk(1.9, 2.8)]
+def test_response_latency_gates_and_window() -> None:
+    chunks = [chunk(0.2, 0.4), chunk(1.5, 1.8), chunk(1.9, 2.8), chunk(9.5, 9.9)]
+    common = {"chunks": chunks, "input_duration_s": 8.0}
 
     turn = v10_scoring.score_response(
-        sample_id="t/1", task="turn_taking", chunks=chunks, event_end_s=1.0
+        sample_id="t/1",
+        task="turn_taking",
+        event_start_s=1.0,
+        event_end_s=1.0,
+        output_segments=[[0.2, 0.4], [1.5, 2.8]],
+        **common,
+    )
+    talked_over = v10_scoring.score_response(
+        sample_id="t/2",
+        task="turn_taking",
+        event_start_s=1.0,
+        event_end_s=1.0,
+        output_segments=[[0.2, 2.8]],
+        **common,
     )
     silent = v10_scoring.score_response(
         sample_id="i/1",
         task="user_interruption",
-        chunks=chunks,
+        event_start_s=0.5,
         event_end_s=1.0,
-        speaking_at_onset=False,
+        output_segments=[[1.5, 2.8]],
+        **common,
+    )
+    interrupted = v10_scoring.score_response(
+        sample_id="i/2",
+        task="user_interruption",
+        event_start_s=0.3,
+        event_end_s=1.0,
+        output_segments=[[0.2, 0.4], [1.5, 7.99]],
+        **common,
     )
     short = v10_scoring.score_response(
-        sample_id="t/2", task="turn_taking", chunks=chunks[:1], event_end_s=0.1
+        sample_id="t/3",
+        task="turn_taking",
+        chunks=chunks[:1],
+        event_start_s=0.1,
+        event_end_s=0.1,
+        input_duration_s=8.0,
+        output_segments=[],
     )
 
     assert turn["status"] == "scored"
     assert turn["num_words"] == 2
     assert turn["latency_s"] == pytest.approx(0.5)
+    assert turn["right_censored"] is False
+    assert talked_over["status"] == "spoke_before_turn_end"
+    assert talked_over["speaking_at_event"] is True
     assert silent["status"] == "not_exercised"
+    assert interrupted["status"] == "scored" and interrupted["right_censored"] is True
     assert short["takeover"] is False and short["latency_s"] is None
 
 
@@ -249,7 +282,10 @@ def test_summary_keeps_selected_denominator_and_rejects_strays() -> None:
         sample_id="t/1",
         task="turn_taking",
         chunks=[chunk(1.2, 1.4), chunk(1.5, 2.5)],
+        event_start_s=1.0,
         event_end_s=1.0,
+        input_duration_s=8.0,
+        output_segments=[[1.2, 2.5]],
     )
 
     summary = v10_scoring.summarize([turn], selected)
@@ -257,6 +293,7 @@ def test_summary_keeps_selected_denominator_and_rejects_strays() -> None:
     turn_summary = summary["tasks"]["turn_taking"]
     assert (turn_summary["selected"], turn_summary["missing"]) == (2, 1)
     assert turn_summary["status_counts"] == {"scored": 1}
+    assert turn_summary["right_censored"] == 0
     assert turn_summary["takeover_rate"] == 1.0
     assert turn_summary["latency_s"]["n"] == 1
     assert turn_summary["latency_s"]["mean"] == pytest.approx(0.2)
