@@ -19,6 +19,7 @@ import pytest
 import websockets
 from pydantic import JsonValue
 from websockets.asyncio.server import ServerConnection
+from websockets.http11 import Request, Response
 
 from benchmarks.duplex.client import (
     ADMISSION_RETRIES,
@@ -514,7 +515,9 @@ async def capture_with_denials(
 ) -> list[dict[str, JsonValue]]:
     remaining = itertools.count()
 
-    def process_request(connection: ServerConnection, request) -> object | None:
+    def process_request(
+        connection: ServerConnection, request: Request
+    ) -> Response | None:
         if next(remaining) < denials:
             return connection.respond(
                 HTTPStatus.SERVICE_UNAVAILABLE, "connection capacity exhausted\n"

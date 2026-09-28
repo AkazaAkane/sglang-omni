@@ -189,7 +189,12 @@ def test_pause_handling_only_counts_words_inside_the_input() -> None:
 
 
 def test_response_latency_gates_and_window() -> None:
-    chunks = [word_chunk(0.2, 0.4), word_chunk(1.5, 1.8), word_chunk(1.9, 2.8), word_chunk(9.5, 9.9)]
+    chunks = [
+        word_chunk(0.2, 0.4),
+        word_chunk(1.5, 1.8),
+        word_chunk(1.9, 2.8),
+        word_chunk(9.5, 9.9),
+    ]
     common = {"chunks": chunks, "input_duration_s": 8.0}
 
     turn = v10_scoring.score_response(
