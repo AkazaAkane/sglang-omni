@@ -10,6 +10,8 @@ import json
 import wave
 from pathlib import Path
 
+from pydantic import JsonValue
+
 from benchmarks.duplex.artifacts import (
     add_server_identity_args,
     replay_run,
@@ -25,7 +27,9 @@ DRAIN_MARGIN_S = 10.0
 MAX_TIMEOUT_S = SESSION_LIMIT_S - DRAIN_MARGIN_S
 
 
-async def run(args: argparse.Namespace, pcm: bytes, server: dict) -> dict:
+async def run(
+    args: argparse.Namespace, pcm: bytes, server: dict[str, JsonValue]
+) -> dict[str, JsonValue]:
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "input.pcm").write_bytes(pcm)
     cases = [
@@ -108,6 +112,8 @@ def main() -> None:
     args = parser.parse_args()
     if not 0 < args.timeout <= MAX_TIMEOUT_S:
         parser.error(f"--timeout must be positive and at most {MAX_TIMEOUT_S} seconds")
+    else:
+        pass
     try:
         with wave.open(str(args.audio), "rb") as audio:
             if (audio.getnchannels(), audio.getsampwidth(), audio.getframerate()) != (
@@ -116,6 +122,8 @@ def main() -> None:
                 SAMPLE_RATE,
             ):
                 parser.error("--audio must be PCM16 mono at 16000 Hz")
+            else:
+                pass
             pcm = audio.readframes(audio.getnframes())
     except (OSError, wave.Error) as exc:
         parser.error(f"--audio is unreadable: {exc}")
@@ -124,10 +132,14 @@ def main() -> None:
         parser.error(
             f"--audio duration must be positive and below {MAX_TIMEOUT_S} seconds"
         )
+    else:
+        pass
     if args.timeout <= duration_s:
         parser.error(
             f"--timeout must exceed the {duration_s:.2f} second paced input duration"
         )
+    else:
+        pass
     try:
         server = server_identity(
             args.url,
@@ -147,3 +159,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+else:
+    pass

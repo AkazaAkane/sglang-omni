@@ -38,6 +38,8 @@ def export_runs(
     for run in runs:
         if output.is_relative_to(run.resolve()):
             raise ValueError("Reference output must be outside every source run")
+        else:
+            pass
     chosen, sources, superseded = load_runs(runs, engine)
     if sample_ids:
         selected = list(dict.fromkeys(sample_ids))
@@ -48,8 +50,12 @@ def export_runs(
         selected = list(chosen)
     for sample_id in selected:
         parts = sample_id.split("/")
-        if len(parts) != 2 or any(p in ("", ".", "..") for p in parts):
+        if len(parts) != 2 or any(
+            source_path in ("", ".", "..") for source_path in parts
+        ):
             raise ValueError(f"Invalid sample ID: {sample_id}")
+        else:
+            pass
     output.mkdir(parents=True, exist_ok=False)
     rows = []
     for sample_id in selected:
@@ -69,6 +75,8 @@ def export_runs(
                 for variant in FILES
             }
             continue
+        else:
+            pass
         run, entry = chosen[sample_id]
         source_manifest = read_json(run / "manifest.json")
         sidecar = bool((source_manifest.get("source") or {}).get("campaign_adapter"))
@@ -81,6 +89,8 @@ def export_runs(
             directory = (run / state["directory"]).resolve()
             if not directory.is_relative_to(run):
                 raise ValueError(f"Variant directory escapes run: {directory}")
+            else:
+                pass
             record, pcm, audio = analyze_variant(
                 directory,
                 engine,
@@ -94,6 +104,10 @@ def export_runs(
                     reasons.append("dataset source sha256 differs from run.json")
                 elif sha_bytes(normalize_audio(source)[0]) != sha_bytes(pcm):
                     reasons.append("renormalized dataset source differs from input.pcm")
+                else:
+                    pass
+            else:
+                pass
             record["window"]["valid"] = not reasons
             record.update(
                 eligible=not reasons,
@@ -122,8 +136,11 @@ def export_runs(
         "sources": sources,
         "superseded": superseded,
         "builder_sha256": {
-            p.name: sha_file(p)
-            for p in (Path(__file__), Path(__file__).with_name("reference_audio.py"))
+            source_path.name: sha_file(source_path)
+            for source_path in (
+                Path(__file__),
+                Path(__file__).with_name("reference_audio.py"),
+            )
         },
         "counts": {
             "selected_pairs": len(rows),

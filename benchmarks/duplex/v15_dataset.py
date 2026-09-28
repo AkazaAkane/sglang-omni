@@ -20,7 +20,7 @@ SUBSETS = (
     "talking_to_other",
     "background_speech",
 )
-# Note (wenyao): README counts; the released backchannel archive holds 98.
+# note (wenyao): README counts; the released backchannel archive holds 98.
 DECLARED_COUNTS = {
     "user_interruption": 200,
     "user_backchannel": 99,
@@ -67,23 +67,29 @@ def list_sample_dirs(
     """Return sample directory names per subset and every ignored entry."""
     if not root.is_dir():
         raise FileNotFoundError(f"dataset root is not a directory: {root}")
+    else:
+        pass
     names: dict[str, list[str]] = {}
     ignored = sorted(
-        entry.name for entry in root.iterdir() if entry.name not in subsets
+        directory_entry.name
+        for directory_entry in root.iterdir()
+        if directory_entry.name not in subsets
     )
     for subset in subsets:
         names[subset] = []
         subset_dir = root / subset
         if subset_dir.is_dir() and not subset_dir.is_symlink():
-            for entry in subset_dir.iterdir():
+            for directory_entry in subset_dir.iterdir():
                 if (
-                    SAMPLE_NAME.fullmatch(entry.name)
-                    and entry.is_dir()
-                    and not entry.is_symlink()
+                    SAMPLE_NAME.fullmatch(directory_entry.name)
+                    and directory_entry.is_dir()
+                    and not directory_entry.is_symlink()
                 ):
-                    names[subset].append(entry.name)
+                    names[subset].append(directory_entry.name)
                 else:
-                    ignored.append(f"{subset}/{entry.name}")
+                    ignored.append(f"{subset}/{directory_entry.name}")
+        else:
+            pass
         names[subset].sort(key=natural_key)
     return names, sorted(ignored)
 
@@ -107,6 +113,8 @@ def validate_sample(root: Path, subset: str, name: str) -> Sample:
         if not path.exists() and not path.is_symlink():
             if key in REQUIRED_FILES:
                 sample.errors.append(f"missing {filename}")
+            else:
+                pass
         elif path.is_symlink() or not path.is_file():
             sample.errors.append(f"{filename} is not a regular file")
         else:
@@ -121,22 +129,24 @@ def validate_sample(root: Path, subset: str, name: str) -> Sample:
     for key, relative in sample.paths.items():
         if relative.endswith(".wav"):
             try:
-                info = soundfile.info(str(root / relative))
+                source_audio = soundfile.info(str(root / relative))
             except (OSError, RuntimeError) as exc:
                 sample.errors.append(f"{Path(relative).name} unreadable: {exc}")
                 continue
-            if info.frames <= 0:
+            if source_audio.frames <= 0:
                 sample.errors.append(f"{Path(relative).name} has no audio frames")
+            else:
+                pass
             sample.audio[key] = {
-                "sample_rate": info.samplerate,
-                "channels": info.channels,
-                "frames": info.frames,
-                "duration_s": info.frames / info.samplerate,
-                "subtype": info.subtype,
+                "sample_rate": source_audio.samplerate,
+                "channels": source_audio.channels,
+                "frames": source_audio.frames,
+                "duration_s": source_audio.frames / source_audio.samplerate,
+                "subtype": source_audio.subtype,
             }
         elif relative.endswith(".json"):
             try:
-                value = json.loads((root / relative).read_text(encoding="utf-8"))
+                document = json.loads((root / relative).read_text(encoding="utf-8"))
             except OSError as exc:
                 sample.errors.append(f"{Path(relative).name} unreadable: {exc}")
                 continue
@@ -145,10 +155,12 @@ def validate_sample(root: Path, subset: str, name: str) -> Sample:
                 continue
             if key != "metadata":
                 continue
-            elif isinstance(value, dict):
-                sample.metadata = value
+            elif isinstance(document, dict):
+                sample.metadata = document
             else:
                 sample.errors.append("metadata.json must hold a JSON object")
+        else:
+            pass
 
     if sample.metadata is not None:
         span = sample.metadata.get("timestamps")
@@ -157,7 +169,8 @@ def validate_sample(root: Path, subset: str, name: str) -> Sample:
             isinstance(span, list)
             and len(span) == 2
             and all(
-                type(bound) in (int, float) and math.isfinite(bound) for bound in span
+                type(boundary_s) in (int, float) and math.isfinite(boundary_s)
+                for boundary_s in span
             )
         ):
             sample.errors.append("metadata timestamps must be finite [start, end]")
@@ -170,6 +183,8 @@ def validate_sample(root: Path, subset: str, name: str) -> Sample:
             )
         else:
             sample.event_span_s = [float(span[0]), float(span[1])]
+    else:
+        pass
     return sample
 
 

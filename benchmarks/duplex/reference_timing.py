@@ -7,7 +7,9 @@ from argparse import Namespace
 from collections import Counter
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable
+from typing import Literal
+
+from pydantic import JsonValue
 
 from benchmarks.duplex.reference_core import (
     EOF_TOLERANCE_S,
@@ -28,10 +30,17 @@ from benchmarks.duplex.reference_core import (
     sha256_file,
     utc_now,
 )
-from benchmarks.duplex.reference_source import load_official_timing, soundfile_load_wav
+from benchmarks.duplex.reference_source import (
+    AudioTensor,
+    SileroLoader,
+    load_official_timing,
+    soundfile_load_wav,
+)
 
 
-def timing_config(paths: dict, bridge: dict, loader: str) -> dict:
+def timing_config(
+    paths: dict[str, Path], bridge: dict[str, JsonValue], loader: str
+) -> dict[str, JsonValue]:
     versions = package_versions()
     return {
         "reference_timing_sha256": sha256_file(paths["timing"]),
@@ -49,50 +58,66 @@ def timing_config(paths: dict, bridge: dict, loader: str) -> dict:
 def select_loader(module: ModuleType, probe: Path, choice: str) -> str:
     if choice == "official":
         return "official torchaudio.load"
+    else:
+        pass
     if choice == "auto":
         try:
             module.load_wav(probe)
             return "official torchaudio.load"
         except (ImportError, RuntimeError):
             pass
+    else:
+        pass
     module.load_wav = soundfile_load_wav(module.SR)
     return "soundfile.read(float32)+torchaudio.functional.resample bridge"
 
 
-def validate_intervals(doc: Any, input_s: float, output_s: float) -> list[str]:
+def validate_intervals(doc: JsonValue, input_s: float, output_s: float) -> list[str]:
     if not isinstance(doc, dict) or set(doc) != {
         "latency_stop_list",
         "latency_resp_list",
     }:
         return ["unexpected latency_intervals keys"]
+    else:
+        pass
     errors = []
     limit = max(input_s, output_s) + TIMING_END_TOLERANCE_S
     for key, intervals in doc.items():
-        for iv in intervals:
-            if not (len(iv) == 2 and finite(*iv) and 0 <= iv[0] <= iv[1] <= limit):
-                errors.append(f"{key} interval {iv} invalid")
+        for interval in intervals:
+            if not (
+                len(interval) == 2
+                and finite(*interval)
+                and 0 <= interval[0] <= interval[1] <= limit
+            ):
+                errors.append(f"{key} interval {interval} invalid")
+            else:
+                pass
     return errors
 
 
 def run_timing(
     args: Namespace,
     engines: list[Engine],
-    paths: dict,
+    paths: dict[str, Path],
     hashes: HashCache,
-    silero_loader: Callable[[], Any] | None = None,
-) -> Counter:
+    silero_loader: SileroLoader | None = None,
+) -> Counter[str]:
     units = []
     for engine in engines:
-        for sid in selected(engine, args.only):
+        for sample_id in selected(engine, args.only):
             for variant in VARIANTS:
-                if engine.eligible(sid, variant):
-                    units.append((engine, sid, variant))
-    counts: Counter = Counter()
+                if engine.eligible(sample_id, variant):
+                    units.append((engine, sample_id, variant))
+                else:
+                    pass
+    counts: Counter[str] = Counter()
     if not units:
         return counts
+    else:
+        pass
     module, bridge = load_official_timing(paths["timing"], silero_loader)
-    probe_engine, probe_sid, probe_variant = units[0]
-    probe = probe_engine.source_audio(probe_sid, VARIANTS[probe_variant][0])
+    probe_engine, probe_sample_id, probe_variant = units[0]
+    probe = probe_engine.source_audio(probe_sample_id, VARIANTS[probe_variant][0])
     loader = select_loader(module, probe, args.audio_loader)
     config = timing_config(paths, bridge, loader)
     config_hash = canonical_hash(config)
@@ -102,36 +127,57 @@ def run_timing(
         {"timing_config": config, "timing_config_hash": config_hash, "bridge": bridge},
     )
 
-    captured: list = []
-    seg_sec, vad_ts = module.seg_sec, module._vad_ts
-    module._vad_ts = (
-        lambda wav: captured.append(("raw", vad_ts(wav))) or captured[-1][1]
-    )
-    module.seg_sec = (
-        lambda wav, gap: captured.append(("merged", gap, seg_sec(wav, gap)))
-        or captured[-1][2]
-    )
+    captured: list[
+        tuple[Literal["raw"], list[tuple[int, int]]]
+        | tuple[Literal["merged"], float, list[tuple[float, float]]]
+    ] = []
+    segment_seconds, vad_timestamps = module.seg_sec, module._vad_ts
 
-    todo = []
-    for engine, sid, variant in units:
-        receipt_path = engine.sample_dir(sid) / "receipts" / f"timing-{variant}.json"
+    def capture_raw(waveform: AudioTensor) -> list[tuple[int, int]]:
+        timestamps = vad_timestamps(waveform)
+        captured.append(("raw", timestamps))
+        return timestamps
+
+    def capture_merged(waveform: AudioTensor, gap: float) -> list[tuple[float, float]]:
+        segments = segment_seconds(waveform, gap)
+        captured.append(("merged", gap, segments))
+        return segments
+
+    module._vad_ts = capture_raw
+    module.seg_sec = capture_merged
+
+    pending_variants = []
+    for engine, sample_id, variant in units:
+        receipt_path = (
+            engine.sample_dir(sample_id) / "receipts" / f"timing-{variant}.json"
+        )
         if receipt_path.exists():
             old = read_json(receipt_path)
             if old.get("status") == "ok":
-                in_name, out_name = VARIANTS[variant]
+                input_name, output_name = VARIANTS[variant]
                 for name, key in (
-                    (in_name, "input_sha256"),
-                    (out_name, "output_sha256"),
+                    (input_name, "input_sha256"),
+                    (output_name, "output_sha256"),
                 ):
-                    if hashes.get(engine.source_audio(sid, name)) != old[key]:
-                        raise ValueError(f"Audio changed after timing: {sid}/{name}")
-                folder = engine.sample_dir(sid)
+                    if hashes.get(engine.source_audio(sample_id, name)) != old[key]:
+                        raise ValueError(
+                            f"Audio changed after timing: {sample_id}/{name}"
+                        )
+                    else:
+                        pass
+                folder = engine.sample_dir(sample_id)
                 if variant == "clean":
                     folder = folder / "clean"
+                else:
+                    pass
                 if sha256_file(folder / module.OUT_FILENAME) != old["intervals_sha256"]:
-                    raise ValueError(f"Timing intervals changed: {sid}/{variant}")
+                    raise ValueError(f"Timing intervals changed: {sample_id}/{variant}")
+                else:
+                    pass
+            else:
+                pass
             if old.get("status") != "ok" and args.retry_failed:
-                todo.append((engine, sid, variant, receipt_path))
+                pending_variants.append((engine, sample_id, variant, receipt_path))
             elif old.get("config_hash") != config_hash:
                 raise SystemExit(
                     f"{receipt_path}: timing config changed; use a new --out"
@@ -140,63 +186,82 @@ def run_timing(
                 counts["reused"] += 1
                 if old.get("status") != "ok":
                     counts[f"reused_{old['status']}"] += 1
+                else:
+                    pass
             continue
-        todo.append((engine, sid, variant, receipt_path))
-    todo = todo[: args.limit]
-    progress = Progress(args.out, "timing", len(todo))
+        else:
+            pass
+        pending_variants.append((engine, sample_id, variant, receipt_path))
+    pending_variants = pending_variants[: args.limit]
+    progress = Progress(args.out, "timing", len(pending_variants))
     with phase_log(args.out, "timing"):
-        for engine, sid, variant, receipt_path in todo:
-            in_name, out_name = VARIANTS[variant]
-            sample = engine.sample_dir(sid)
+        for engine, sample_id, variant, receipt_path in pending_variants:
+            input_name, output_name = VARIANTS[variant]
+            sample = engine.sample_dir(sample_id)
             folder = sample if variant == "overlap" else sample / "clean"
-            src_in, src_out = engine.source_audio(sid, in_name), engine.source_audio(
-                sid, out_name
-            )
+            input_path, output_path = engine.source_audio(
+                sample_id, input_name
+            ), engine.source_audio(sample_id, output_name)
             receipt = {
                 "variant": variant,
                 "config_hash": config_hash,
                 "folder": str(folder),
                 "official_inputs": {
-                    "input.wav": str(src_in),
-                    "output.wav": str(src_out),
+                    "input.wav": str(input_path),
+                    "output.wav": str(output_path),
                 },
             }
-            if not (src_in.exists() and src_out.exists()):
+            if not (input_path.exists() and output_path.exists()):
                 receipt["status"] = "missing_audio"
             else:
                 try:
-                    engine.link(sample / in_name, src_in)
-                    engine.link(sample / out_name, src_out)
+                    engine.link(sample / input_name, input_path)
+                    engine.link(sample / output_name, output_path)
                     if variant == "clean":
-                        engine.link(folder / "input.wav", src_in)
-                        engine.link(folder / "output.wav", src_out)
+                        engine.link(folder / "input.wav", input_path)
+                        engine.link(folder / "output.wav", output_path)
+                    else:
+                        pass
                     receipt.update(
-                        input_sha256=hashes.get(src_in),
-                        output_sha256=hashes.get(src_out),
-                        input_s=audio_duration(src_in),
-                        output_s=audio_duration(src_out),
+                        input_sha256=hashes.get(input_path),
+                        output_sha256=hashes.get(output_path),
+                        input_s=audio_duration(input_path),
+                        output_s=audio_duration(output_path),
                     )
                     captured.clear()
                     module.process_folder(folder)
-                    doc = read_json(folder / module.OUT_FILENAME)
-                    merged = [c for c in captured if c[0] == "merged"]
-                    raw = [c[1] for c in captured if c[0] == "raw"]
-                    user, model = [list(map(list, m[2])) for m in merged]
+                    intervals = read_json(folder / module.OUT_FILENAME)
+                    merged = [
+                        captured_segment
+                        for captured_segment in captured
+                        if captured_segment[0] == "merged"
+                    ]
+                    raw = [
+                        captured_segment[1]
+                        for captured_segment in captured
+                        if captured_segment[0] == "raw"
+                    ]
+                    user_segments, model_segments = [
+                        list(map(list, merged_segment[2])) for merged_segment in merged
+                    ]
                     errors = validate_intervals(
-                        doc, receipt["input_s"], receipt["output_s"]
+                        intervals, receipt["input_s"], receipt["output_s"]
                     )
                     receipt.update(
                         status="invalid_intervals" if errors else "ok",
                         errors=errors,
                         intervals_sha256=sha256_file(folder / module.OUT_FILENAME),
                         raw_vad_samples={"user": raw[0], "model": raw[1]},
-                        user_segments=user,
-                        model_segments=model,
+                        user_segments=user_segments,
+                        model_segments=model_segments,
                         labels=eof_labels(
-                            user, model, receipt["input_s"], receipt["output_s"]
+                            user_segments,
+                            model_segments,
+                            receipt["input_s"],
+                            receipt["output_s"],
                         ),
-                        stop_n=len(doc["latency_stop_list"]),
-                        resp_n=len(doc["latency_resp_list"]),
+                        stop_n=len(intervals["latency_stop_list"]),
+                        resp_n=len(intervals["latency_resp_list"]),
                     )
                 except Exception as exc:
                     receipt.update(
@@ -211,15 +276,17 @@ def run_timing(
     return counts
 
 
-def eof_labels(user: list, model: list, input_s: float, output_s: float) -> dict:
+def eof_labels(
+    user: list[list[float]], model: list[list[float]], input_s: float, output_s: float
+) -> dict[str, JsonValue]:
     """Diagnostic censoring labels from the official merged segments; no interval is altered."""
-    starts = [s for s, _ in model]
+    starts = [start_s for start_s, _ in model]
     return {
         "model_speech_at_output_end": bool(model)
         and model[-1][1] >= output_s - EOF_TOLERANCE_S,
         "user_speech_at_input_end": bool(user)
         and user[-1][1] >= input_s - EOF_TOLERANCE_S,
         "user_ends_without_later_model_start": [
-            e for _, e in user if not any(s > e for s in starts)
+            end_s for _, end_s in user if not any(start_s > end_s for start_s in starts)
         ],
     }

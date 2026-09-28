@@ -13,6 +13,7 @@ from typing import Protocol
 
 import numpy as np
 import soundfile
+from numpy.typing import NDArray
 from pydantic import JsonValue
 from scipy.signal import resample_poly
 
@@ -37,17 +38,23 @@ TRANSCRIBE_FILES = (
 )
 WHISPER_SAMPLE_RATE = 16000
 WHISPER_OPTIONS = {"language": "en", "word_timestamps": True, "temperature": 0.0}
-# Note (wenyao): Float rounding only; any larger overrun is an ASR error, never clipped.
+# note (wenyao): Float rounding only; any larger overrun is an ASR error, never clipped.
 WORD_END_TOLERANCE_S = 1e-3
 
 
 class SpeechRecognizer(Protocol):
     def transcribe(
-        self, audio: np.ndarray, **options: JsonValue
+        self,
+        audio: NDArray[np.float32],
+        *,
+        language: str,
+        word_timestamps: bool,
+        temperature: float,
+        fp16: bool,
     ) -> dict[str, JsonValue]: ...
 
 
-def load_mono(path: Path) -> tuple[np.ndarray, int]:
+def load_mono(path: Path) -> tuple[NDArray[np.float32], int]:
     audio, sample_rate = soundfile.read(str(path), dtype="float32", always_2d=True)
     return audio.mean(axis=1), sample_rate
 
@@ -56,30 +63,36 @@ def normalize_words(
     raw: dict[str, JsonValue], duration_s: float
 ) -> list[dict[str, JsonValue]]:
     """Copy raw word times verbatim after checking them, or raise ValueError."""
-    chunks = []
+    word_chunks = []
     previous_start = 0.0
-    for segment in raw["segments"]:
-        for word in segment["words"]:
-            start_s, end_s = word["start"], word["end"]
+    for recognized_segment in raw["segments"]:
+        for recognized_word in recognized_segment["words"]:
+            start_s, end_s = recognized_word["start"], recognized_word["end"]
             if not all(
-                isinstance(value, (int, float))
-                and not isinstance(value, bool)
-                and math.isfinite(value)
-                for value in (start_s, end_s)
+                isinstance(time_value, (int, float))
+                and not isinstance(time_value, bool)
+                and math.isfinite(time_value)
+                for time_value in (start_s, end_s)
             ):
-                raise ValueError(f"word {word['word']!r} has non-finite times")
+                raise ValueError(
+                    f"word {recognized_word['word']!r} has non-finite times"
+                )
             elif not previous_start <= start_s <= end_s:
                 raise ValueError(
-                    f"word {word['word']!r} [{start_s}, {end_s}] is negative, "
+                    f"word {recognized_word['word']!r} [{start_s}, {end_s}] is negative, "
                     "reversed or out of order"
                 )
             elif end_s > duration_s + WORD_END_TOLERANCE_S:
                 raise ValueError(
-                    f"word {word['word']!r} ends at {end_s}s past audio end {duration_s}s"
+                    f"word {recognized_word['word']!r} ends at {end_s}s past audio end {duration_s}s"
                 )
+            else:
+                pass
             previous_start = start_s
-            chunks.append({"text": word["word"].strip(), "timestamp": [start_s, end_s]})
-    return chunks
+            word_chunks.append(
+                {"text": recognized_word["word"].strip(), "timestamp": [start_s, end_s]}
+            )
+    return word_chunks
 
 
 def transcribe_run(
@@ -95,14 +108,14 @@ def transcribe_run(
     manifest, run, manifest_sha256 = load_run(run_dir)
     output_sample_rate = PROFILES[manifest["profile"]].output_sample_rate
     create_output(output, run_dir)
-    options = {**WHISPER_OPTIONS, "fp16": device.startswith("cuda")}
+    transcription_options = {**WHISPER_OPTIONS, "fp16": device.startswith("cuda")}
     divisor = math.gcd(output_sample_rate, WHISPER_SAMPLE_RATE)
     source = source_fingerprint()
-    repo = Path(__file__).resolve().parents[2]
+    repository_root = Path(__file__).resolve().parents[2]
     source["files_sha256"].update(
-        {path: file_sha256(repo / path) for path in TRANSCRIBE_FILES}
+        {path: file_sha256(repository_root / path) for path in TRANSCRIBE_FILES}
     )
-    result = {
+    transcription_result = {
         "schema_version": 1,
         "kind": "fdb-v15-output-asr",
         "source": source,
@@ -114,7 +127,7 @@ def transcribe_run(
             "model_path": str(model_path),
             "model_sha256": file_sha256(model_path),
             "device": device,
-            "options": options,
+            "options": transcription_options,
             "audio": f"mono float32 resampled to {WHISPER_SAMPLE_RATE} Hz with "
             "scipy.signal.resample_poly",
             "word_end_tolerance_s": WORD_END_TOLERANCE_S,
@@ -134,28 +147,32 @@ def transcribe_run(
             for variant, state in sample["variants"].items()
         ],
     }
-    write_json(output / "transcripts.json", result)
-    for entry in result["variants"]:
-        if entry["status"] != "pending":
+    write_json(output / "transcripts.json", transcription_result)
+    for variant_record in transcription_result["variants"]:
+        if variant_record["status"] != "pending":
             continue
-        audio_path = Path(entry["audio"])
+        else:
+            pass
+        audio_path = Path(variant_record["audio"])
         raw_file = Path("raw") / f"{audio_path.parent}.json"
         try:
             audio, sample_rate = load_mono(run_dir / audio_path)
             if sample_rate != output_sample_rate:
                 raise ValueError(f"{audio_path} is {sample_rate} Hz")
+            else:
+                pass
             duration_s = len(audio) / sample_rate
             resampled = resample_poly(
                 audio,
                 WHISPER_SAMPLE_RATE // divisor,
                 output_sample_rate // divisor,
             ).astype(np.float32)
-            raw = model.transcribe(resampled, **options)
+            raw = model.transcribe(resampled, **transcription_options)
             (output / raw_file).parent.mkdir(parents=True, exist_ok=True)
-            # Note (wenyao): Verbatim, so a NaN the validator rejects is still auditable.
+            # note (wenyao): Verbatim, so a NaN the validator rejects is still auditable.
             (output / raw_file).write_text(json.dumps(raw, indent=2) + "\n")
-            entry["raw_file"] = str(raw_file)
-            entry.update(
+            variant_record["raw_file"] = str(raw_file)
+            variant_record.update(
                 status="transcribed",
                 audio_sha256=file_sha256(run_dir / audio_path),
                 duration_s=duration_s,
@@ -165,11 +182,13 @@ def transcribe_run(
                 },
             )
         except Exception as exc:
-            # Note (wenyao): One bad variant must not discard the rest of a long ASR pass.
-            logger.exception(f"ASR failed for {entry['sample_id']}/{entry['variant']}")
-            entry.update(status="error", error=f"{type(exc).__name__}: {exc}")
-        write_json(output / "transcripts.json", result)
-    return result
+            # note (wenyao): One bad variant must not discard the rest of a long ASR pass.
+            logger.exception(
+                f"ASR failed for {variant_record['sample_id']}/{variant_record['variant']}"
+            )
+            variant_record.update(status="error", error=f"{type(exc).__name__}: {exc}")
+        write_json(output / "transcripts.json", transcription_result)
+    return transcription_result
 
 
 def transcribe_command(arguments: argparse.Namespace) -> int:
@@ -181,7 +200,7 @@ def transcribe_command(arguments: argparse.Namespace) -> int:
         )
     else:
         model = whisper.load_model(str(arguments.model_path), device=arguments.device)
-        result = transcribe_run(
+        transcription_result = transcribe_run(
             arguments.run,
             arguments.output,
             model=model,
@@ -189,7 +208,10 @@ def transcribe_command(arguments: argparse.Namespace) -> int:
             device=arguments.device,
             timeline=arguments.timeline,
         )
-        statuses = [entry["status"] for entry in result["variants"]]
+        statuses = [
+            variant_record["status"]
+            for variant_record in transcription_result["variants"]
+        ]
         print(
             json.dumps(
                 {status: statuses.count(status) for status in sorted(set(statuses))}

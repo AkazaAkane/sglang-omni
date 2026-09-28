@@ -305,6 +305,8 @@ async def run_asr_realtime_once(
                     trace=trace,
                 ),
             )
+    else:
+        pass
 
     outputs: list[SampleOutput] = []
     per_sample: list[dict[str, Any]] = []
@@ -315,6 +317,8 @@ async def run_asr_realtime_once(
         record = _per_sample_record(sample, trace, output)
         if run_dir is not None:
             record["trace_file"] = str((run_dir / f"{index:06d}.json").resolve())
+        else:
+            pass
         per_sample.append(record)
 
     decode_intervals = {t.session.get("decode_interval_ms") for t in traces}

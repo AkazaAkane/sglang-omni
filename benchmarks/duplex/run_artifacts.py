@@ -28,8 +28,8 @@ RUN_KINDS = ("full-duplex-bench-v1.5-paired", "full-duplex-bench-v1.0")
 
 
 def file_sha256(path: Path) -> str:
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
+    with path.open("rb") as artifact_file:
+        return hashlib.file_digest(artifact_file, "sha256").hexdigest()
 
 
 def load_run(run_dir: Path) -> tuple[dict[str, JsonValue], dict[str, JsonValue], str]:
@@ -38,6 +38,8 @@ def load_run(run_dir: Path) -> tuple[dict[str, JsonValue], dict[str, JsonValue],
     manifest = json.loads(manifest_path.read_text())
     if manifest.get("kind") not in RUN_KINDS:
         raise ValueError(f"{run_dir} is not a Full-Duplex-Bench run directory")
+    else:
+        pass
     return (
         manifest,
         json.loads((run_dir / "run.json").read_text()),
@@ -49,6 +51,8 @@ def create_output(output: Path, run_dir: Path) -> None:
     """Create a fresh directory outside the recorded run, which stays immutable."""
     if output.resolve().is_relative_to(run_dir.resolve()):
         raise ValueError(f"output {output} must be outside the run directory {run_dir}")
+    else:
+        pass
     output.mkdir(parents=True, exist_ok=False)
 
 
@@ -60,9 +64,9 @@ def accounting(
     observed = manifest["dataset"]["inventory"]["observed"]
     samples = run["samples"]
     variants = [
-        (sample["id"], name, state)
+        (sample["id"], variant_name, variant_state)
         for sample in samples
-        for name, state in sample["variants"].items()
+        for variant_name, variant_state in sample["variants"].items()
     ]
     return {
         "run_status": run["status"],
@@ -79,23 +83,29 @@ def accounting(
         "selected_pairs": len(samples),
         "selected_variants": len(variants),
         "attempted_variants": sum(
-            state["status"] not in ("pending", "invalid") for _, _, state in variants
+            variant_state["status"] not in ("pending", "invalid")
+            for _, _, variant_state in variants
         ),
-        "variant_status": dict(Counter(state["status"] for _, _, state in variants)),
+        "variant_status": dict(
+            Counter(variant_state["status"] for _, _, variant_state in variants)
+        ),
         "qualified_pairs": sum(
-            all(state["qualified"] for state in sample["variants"].values())
+            all(
+                variant_state["qualified"]
+                for variant_state in sample["variants"].values()
+            )
             for sample in samples
         ),
         "failures": [
             {
                 "sample_id": sample_id,
-                "variant": name,
-                "status": state["status"],
-                "errors": state["errors"],
-                "violations": state["violations"],
+                "variant": variant_name,
+                "status": variant_state["status"],
+                "errors": variant_state["errors"],
+                "violations": variant_state["violations"],
             }
-            for sample_id, name, state in variants
-            if state["status"] != "pass"
+            for sample_id, variant_name, variant_state in variants
+            if variant_state["status"] != "pass"
         ],
     }
 
@@ -104,27 +114,36 @@ def load_output_transcripts(
     transcripts_dir: Path, run_dir: Path, manifest_sha256: str, timeline: Timeline
 ) -> tuple[dict[tuple[str, str], dict[str, JsonValue]], dict[str, JsonValue]]:
     """Map (sample_id, variant) to ASR evidence after checking it matches this run."""
-    document = json.loads((transcripts_dir / "transcripts.json").read_text())
-    if document["run"]["manifest_sha256"] != manifest_sha256:
+    transcripts = json.loads((transcripts_dir / "transcripts.json").read_text())
+    if transcripts["run"]["manifest_sha256"] != manifest_sha256:
         raise ValueError(f"{transcripts_dir} transcribes a different run")
-    elif document["timeline"] != timeline:
+    elif transcripts["timeline"] != timeline:
         raise ValueError(
-            f"{transcripts_dir} uses timeline {document['timeline']}, not {timeline}"
+            f"{transcripts_dir} uses timeline {transcripts['timeline']}, not {timeline}"
         )
+    else:
+        pass
     evidence = {}
-    for entry in document["variants"]:
-        if entry["status"] != "transcribed":
+    for transcript_entry in transcripts["variants"]:
+        if transcript_entry["status"] != "transcribed":
             continue
-        if file_sha256(run_dir / entry["audio"]) != entry["audio_sha256"]:
-            raise ValueError(f"{entry['audio']} changed after transcription")
-        evidence[(entry["sample_id"], entry["variant"])] = {
-            "transcript": entry["transcript"],
+        else:
+            pass
+        if (
+            file_sha256(run_dir / transcript_entry["audio"])
+            != transcript_entry["audio_sha256"]
+        ):
+            raise ValueError(f"{transcript_entry['audio']} changed after transcription")
+        else:
+            pass
+        evidence[(transcript_entry["sample_id"], transcript_entry["variant"])] = {
+            "transcript": transcript_entry["transcript"],
             "timestamp_source": "asr_aligned",
-            "duration_s": entry["duration_s"],
-            "source_sha256": entry["audio_sha256"],
+            "duration_s": transcript_entry["duration_s"],
+            "source_sha256": transcript_entry["audio_sha256"],
         }
     return evidence, {
         "path": str(transcripts_dir.resolve()),
         "sha256": file_sha256(transcripts_dir / "transcripts.json"),
-        "asr": document["asr"],
+        "asr": transcripts["asr"],
     }

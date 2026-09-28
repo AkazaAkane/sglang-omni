@@ -28,7 +28,7 @@ TRANSCRIPT_DELTAS = (
     "response.output_audio_transcript.delta",
     "response.output_text.delta",
 )
-# Note (wenyao): Playout and event spans assume paced source time within one packet.
+# note (wenyao): Playout and event spans assume paced source time within one packet.
 PACING_TOLERANCE_S = PACKET_MS / 1000
 INPUT_TIMING_CAVEAT = (
     "client send clock only; network, server receipt and acoustic onset are unmeasured"
@@ -37,47 +37,62 @@ INPUT_TIMING_CAVEAT = (
 
 def write_json(path: Path, value: JsonValue) -> None:
     """Replace path atomically so readers never observe a partial document."""
-    partial = path.with_name(f".{path.name}.partial")
-    partial.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
-    os.replace(partial, path)
+    partial_path = path.with_name(f".{path.name}.partial")
+    partial_path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+    os.replace(partial_path, path)
 
 
 def normalize_audio(path: Path) -> tuple[bytes, dict[str, JsonValue]]:
     """Convert to mono 16 kHz PCM16 without trimming, padding or channel picking."""
-    info = soundfile.info(str(path))
+    source_audio = soundfile.info(str(path))
     record: dict[str, JsonValue] = {
-        "source_sample_rate": info.samplerate,
-        "source_channels": info.channels,
-        "source_subtype": info.subtype,
-        "source_frames": info.frames,
+        "source_sample_rate": source_audio.samplerate,
+        "source_channels": source_audio.channels,
+        "source_subtype": source_audio.subtype,
+        "source_frames": source_audio.frames,
         "downmix": None,
         "resample": None,
         "pcm16": "exact",
         "clipped_samples": 0,
     }
-    if (info.samplerate, info.channels, info.subtype) == (SAMPLE_RATE, 1, "PCM_16"):
+    if (source_audio.samplerate, source_audio.channels, source_audio.subtype) == (
+        SAMPLE_RATE,
+        1,
+        "PCM_16",
+    ):
         pcm = soundfile.read(str(path), dtype="int16")[0].astype("<i2").tobytes()
     else:
         audio = soundfile.read(str(path), dtype="float64", always_2d=True)[0]
         nonfinite = int(np.count_nonzero(~np.isfinite(audio)))
         if nonfinite:
             raise ValueError(f"{path.name} has {nonfinite} non-finite source samples")
-        if info.channels > 1:
+        else:
+            pass
+        if source_audio.channels > 1:
             audio = audio.mean(axis=1, keepdims=True)
-            record["downmix"] = f"mean of {info.channels} channels"
+            record["downmix"] = f"mean of {source_audio.channels} channels"
+        else:
+            pass
         samples = audio[:, 0]
-        if info.samplerate != SAMPLE_RATE:
-            divisor = math.gcd(SAMPLE_RATE, info.samplerate)
-            up, down = SAMPLE_RATE // divisor, info.samplerate // divisor
-            samples = resample_poly(samples, up, down)
+        if source_audio.samplerate != SAMPLE_RATE:
+            divisor = math.gcd(SAMPLE_RATE, source_audio.samplerate)
+            upsample_factor, downsample_factor = (
+                SAMPLE_RATE // divisor,
+                source_audio.samplerate // divisor,
+            )
+            samples = resample_poly(samples, upsample_factor, downsample_factor)
             record["resample"] = {
                 "method": "scipy.signal.resample_poly",
-                "up": up,
-                "down": down,
+                "up": upsample_factor,
+                "down": downsample_factor,
             }
+        else:
+            pass
         scaled = np.round(samples * 32768)
         if not np.isfinite(scaled).all():
             raise ValueError(f"{path.name} became non-finite after downmix/resampling")
+        else:
+            pass
         record["pcm16"] = "float scaled by 32768, rounded, clipped to int16"
         record["clipped_samples"] = int(
             np.count_nonzero((scaled < -32768) | (scaled > 32767))
@@ -91,12 +106,12 @@ def reconstruct_output(
     variant_dir: Path, *, profile: ProfileName = DEFAULT_PROFILE
 ) -> dict[str, JsonValue]:
     """Rebuild model audio and a SIMULATED zero-buffer client playout from a trace."""
-    contract = PROFILES[profile]
-    output_sample_rate = contract.output_sample_rate
+    profile_contract = PROFILES[profile]
+    output_sample_rate = profile_contract.output_sample_rate
     errors: list[str] = []
     records = []
-    with (variant_dir / "continuous.jsonl").open(encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
+    with (variant_dir / "continuous.jsonl").open(encoding="utf-8") as trace_file:
+        for line_number, line in enumerate(trace_file, start=1):
             try:
                 records.append((line_number, json.loads(line)))
             except ValueError as exc:
@@ -112,6 +127,8 @@ def reconstruct_output(
     )
     if origin_s is None:
         errors.append("no input_audio_buffer.append was sent")
+    else:
+        pass
     media = bytearray()
     playout = bytearray()
     chunks = []
@@ -119,15 +136,19 @@ def reconstruct_output(
     appends = []
     for line_number, record in records:
         event = record["event"]
-        kind = event.get("type")
+        event_type = event.get("type")
         if origin_s is None:
             break
+        else:
+            pass
         elapsed_s = record["time_s"] - origin_s
-        if record["direction"] == "send" and kind == "input_audio_buffer.append":
+        if record["direction"] == "send" and event_type == "input_audio_buffer.append":
             source_start_ms = event.get("sglang", {}).get("t_start_ms")
             if type(source_start_ms) not in (int, float):
                 errors.append(f"trace line {line_number}: append lacks t_start_ms")
                 continue
+            else:
+                pass
             appends.append(
                 {
                     "index": len(appends),
@@ -139,17 +160,17 @@ def reconstruct_output(
             )
         elif record["direction"] != "receive":
             continue
-        elif kind in TRANSCRIPT_DELTAS:
+        elif event_type in TRANSCRIPT_DELTAS:
             transcript_events.append(
                 {
                     "trace_line": line_number,
-                    "type": kind,
+                    "type": event_type,
                     "response_id": event.get("response_id"),
                     "receipt_s": elapsed_s,
                     "delta": event.get("delta"),
                 }
             )
-        elif kind == "response.output_audio.delta":
+        elif event_type == "response.output_audio.delta":
             try:
                 pcm = base64.b64decode(event.get("delta") or "", validate=True)
             except (binascii.Error, TypeError) as exc:
@@ -158,6 +179,8 @@ def reconstruct_output(
             if not pcm or len(pcm) % 2:
                 errors.append(f"trace line {line_number}: truncated PCM16 audio delta")
                 continue
+            else:
+                pass
             receive_sample = round(elapsed_s * output_sample_rate)
             playout_start = max(len(playout) // 2, receive_sample)
             chunks.append(
@@ -175,37 +198,54 @@ def reconstruct_output(
             playout.extend(bytes(2 * (playout_start - len(playout) // 2)))
             playout.extend(pcm)
             media.extend(pcm)
-    if origin_s is not None and not media and contract.continuous_output:
+        else:
+            pass
+    if origin_s is not None and not media and profile_contract.continuous_output:
         errors.append("no model output audio")
-    worst = max(appends, key=lambda item: abs(item["send_deviation_s"]), default=None)
+    else:
+        pass
+    largest_deviation = max(
+        appends, key=lambda append: abs(append["send_deviation_s"]), default=None
+    )
     input_timing = {
         "tolerance_s": PACING_TOLERANCE_S,
         "reference": "sglang.t_start_ms versus client send time after the first append",
         "uncertainty": INPUT_TIMING_CAVEAT,
-        "max_abs_deviation_s": abs(worst["send_deviation_s"]) if worst else None,
-        "max_deviation_index": worst["index"] if worst else None,
+        "max_abs_deviation_s": (
+            abs(largest_deviation["send_deviation_s"]) if largest_deviation else None
+        ),
+        "max_deviation_index": (
+            largest_deviation["index"] if largest_deviation else None
+        ),
         "within_tolerance": bool(
-            worst and abs(worst["send_deviation_s"]) <= PACING_TOLERANCE_S
+            largest_deviation
+            and abs(largest_deviation["send_deviation_s"]) <= PACING_TOLERANCE_S
         ),
     }
-    if worst and not input_timing["within_tolerance"]:
+    if largest_deviation and not input_timing["within_tolerance"]:
         errors.append(
-            f"input pacing deviation {worst['send_deviation_s']:.3f}s at append "
-            f"{worst['index']} (trace line {worst['trace_line']}) exceeds "
+            f"input pacing deviation {largest_deviation['send_deviation_s']:.3f}s at append "
+            f"{largest_deviation['index']} (trace line {largest_deviation['trace_line']}) exceeds "
             f"{PACING_TOLERANCE_S}s"
         )
-    if not media and not contract.continuous_output and appends:
+    else:
+        pass
+    if not media and not profile_contract.continuous_output and appends:
         accepted = [
-            r["event"]["accepted_end_ms"]
-            for _, r in records
-            if r["direction"] == "receive"
-            and r["event"].get("type") == "sglang.input_audio.accepted"
+            trace_record["event"]["accepted_end_ms"]
+            for _, trace_record in records
+            if trace_record["direction"] == "receive"
+            and trace_record["event"].get("type") == "sglang.input_audio.accepted"
         ]
         if accepted:
             playout.extend(bytes(round(max(accepted) * output_sample_rate / 1000) * 2))
+        else:
+            pass
+    else:
+        pass
     pcm_sha256 = {}
     for name, pcm in (("output-media.wav", media), ("output-playout.wav", playout)):
-        if pcm or not contract.continuous_output:
+        if pcm or not profile_contract.continuous_output:
             soundfile.write(
                 str(variant_dir / name),
                 np.frombuffer(bytes(pcm), dtype="<i2"),
@@ -213,16 +253,20 @@ def reconstruct_output(
                 subtype="PCM_16",
             )
             pcm_sha256[name] = hashlib.sha256(pcm).hexdigest()
-    texts: dict[str, str] = {}
-    for item in transcript_events:
-        texts[item["type"]] = texts.get(item["type"], "") + (item["delta"] or "")
+        else:
+            pass
+    transcript_texts: dict[str, str] = {}
+    for transcript_event in transcript_events:
+        transcript_texts[transcript_event["type"]] = transcript_texts.get(
+            transcript_event["type"], ""
+        ) + (transcript_event["delta"] or "")
     write_json(
         variant_dir / "transcript.json",
         {
             "provenance": "native server transcript deltas from continuous.jsonl",
             "independent_asr": False,
             "events": transcript_events,
-            "text": texts,
+            "text": transcript_texts,
         },
     )
     summary = {

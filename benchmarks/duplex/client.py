@@ -9,9 +9,10 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Literal, TypedDict
 
 import websockets
+from pydantic import JsonValue
 
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName
 
@@ -21,13 +22,13 @@ PACKET_BYTES = SAMPLE_RATE * PACKET_MS // 1000 * 2
 MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 POST_CLOSE_SECONDS = 0.2
 FRAME_EXCERPT_CHARS = 200
-# Note (wenyao): A closing session can still occupy the only admission slot.
+# note (wenyao): A closing session can still occupy the only admission slot.
 ADMISSION_DENIED_STATUS = 503
 ADMISSION_RETRIES = 3
 ADMISSION_BACKOFF_S = 0.25
 SEND_RECEIPTS_FILE = "input-send-receipts.json"
-# Note (wenyao): Keepalive and compression would perturb packet timing.
-TRANSPORT = {
+# note (wenyao): Keepalive and compression would perturb packet timing.
+TRANSPORT: dict[str, JsonValue] = {
     "max_message_bytes": MAX_MESSAGE_BYTES,
     "compression": None,
     "keepalive_ping": False,
@@ -39,11 +40,23 @@ TRANSPORT = {
 }
 
 
+class InputAudioMetadata(TypedDict):
+    seq: int
+    t_start_ms: float
+
+
+class SendReceipt(TypedDict):
+    event_id: str
+    seq: int
+    start_s: float
+    completed_s: float
+
+
 async def run_session(
     url: str,
     pcm: bytes,
     *,
-    scenario: str,
+    scenario: Literal["continuous"],
     trace_path: Path,
     timeout_s: float = 90.0,
     profile: ProfileName = DEFAULT_PROFILE,
@@ -51,26 +64,33 @@ async def run_session(
     """Save observations and failures; classification belongs to offline replay."""
     if scenario != "continuous":
         raise ValueError(f"unsupported scenario: {scenario}")
+    else:
+        pass
     if not pcm or len(pcm) % 2:
         raise ValueError("Input must be nonempty PCM16")
+    else:
+        pass
 
-    receipts: list[dict[str, Any]] = []
+    receipts: list[SendReceipt] = []
     with trace_path.open("x", encoding="utf-8", buffering=1) as trace_file:
 
-        def record(direction: str, event: dict[str, Any]) -> float:
-            now = time.perf_counter()
+        def record(
+            direction: Literal["send", "receive", "error", "admission"],
+            event: dict[str, JsonValue],
+        ) -> float:
+            observed_time_s = time.perf_counter()
             trace_file.write(
                 json.dumps(
                     {
                         "direction": direction,
-                        "time_s": now,
+                        "time_s": observed_time_s,
                         "event": event,
                     },
                     allow_nan=False,
                 )
                 + "\n"
             )
-            return now
+            return observed_time_s
 
         async def admit() -> websockets.ClientConnection:
             attempt = 0
@@ -103,28 +123,54 @@ async def run_session(
                         await asyncio.sleep(ADMISSION_BACKOFF_S)
 
         async def exchange() -> None:
-            async with await admit() as ws:
+            async with await admit() as websocket:
                 seen: dict[str, asyncio.Event] = {}
                 aborted = asyncio.Event()
                 fatal = False
 
-                async def send(event_type: str, **payload: Any) -> None:
-                    event = {
+                async def send(
+                    event_type: Literal[
+                        "session.update",
+                        "input_audio_buffer.append",
+                        "sglang.input_audio.end",
+                        "session.close",
+                    ],
+                    *,
+                    session: dict[str, list[str]] | None = None,
+                    audio: str | None = None,
+                    sglang: InputAudioMetadata | None = None,
+                ) -> None:
+                    event_id = uuid.uuid4().hex
+                    event: dict[str, JsonValue] = {
                         "type": event_type,
-                        "event_id": uuid.uuid4().hex,
-                        **payload,
+                        "event_id": event_id,
                     }
-                    started = record("send", event)
-                    await ws.send(json.dumps(event))
+                    if session is not None:
+                        event["session"] = session
+                    else:
+                        pass
+                    if audio is not None:
+                        event["audio"] = audio
+                    else:
+                        pass
+                    if sglang is not None:
+                        event["sglang"] = sglang
+                    else:
+                        pass
+                    send_started_s = record("send", event)
+                    await websocket.send(json.dumps(event))
                     if event_type == "input_audio_buffer.append":
+                        assert sglang is not None
                         receipts.append(
                             {
-                                "event_id": event["event_id"],
-                                "seq": event["sglang"]["seq"],
-                                "start_s": started,
+                                "event_id": event_id,
+                                "seq": sglang["seq"],
+                                "start_s": send_started_s,
                                 "completed_s": time.perf_counter(),
                             }
                         )
+                    else:
+                        pass
 
                 async def settle(event_type: str) -> bool:
                     receipt = seen.setdefault(event_type, asyncio.Event())
@@ -142,31 +188,39 @@ async def run_session(
 
                 async def receive() -> None:
                     nonlocal fatal
-                    async for raw in ws:
+                    async for frame in websocket:
                         try:
-                            event = json.loads(raw)
+                            event = json.loads(frame)
                             if not isinstance(event, dict):
                                 raise ValueError("server event must be a JSON object")
+                            else:
+                                pass
                             event_type = event.get("type")
                             if not isinstance(event_type, str):
                                 raise ValueError("server event type must be a string")
+                            else:
+                                pass
                             record("receive", event)
                         except ValueError as exc:
                             raise ValueError(
                                 "malformed server frame "
-                                f"{raw[:FRAME_EXCERPT_CHARS]!r}: "
+                                f"{frame[:FRAME_EXCERPT_CHARS]!r}: "
                                 f"{type(exc).__name__}: {exc}"
                             ) from exc
                         seen.setdefault(event_type, asyncio.Event()).set()
                         if event_type == "error":
-                            # Note (wenyao): Close waits for adapter teardown.
+                            # note (wenyao): Close waits for adapter teardown.
                             extension = event.get("sglang")
                             fatal = fatal or bool(
                                 isinstance(extension, dict) and extension.get("fatal")
                             )
                             aborted.set()
+                        else:
+                            pass
                     if not seen.get("session.closed", asyncio.Event()).is_set():
                         raise RuntimeError("Connection closed without session.closed")
+                    else:
+                        pass
 
                 async def drive() -> None:
                     streamed = False
@@ -179,31 +233,39 @@ async def run_session(
                                 )
                             },
                         )
+                    else:
+                        pass
                     if await settle("session.updated"):
                         streamed = True
                         start_s = time.perf_counter()
-                        for seq, offset in enumerate(range(0, len(pcm), PACKET_BYTES)):
+                        for sequence, byte_offset in enumerate(
+                            range(0, len(pcm), PACKET_BYTES)
+                        ):
                             await asyncio.sleep(
                                 max(
                                     0.0,
                                     start_s
-                                    + seq * PACKET_MS / 1000
+                                    + sequence * PACKET_MS / 1000
                                     - time.perf_counter(),
                                 )
                             )
                             if aborted.is_set():
                                 streamed = False
                                 break
+                            else:
+                                pass
                             await send(
                                 "input_audio_buffer.append",
                                 audio=base64.b64encode(
-                                    pcm[offset : offset + PACKET_BYTES]
+                                    pcm[byte_offset : byte_offset + PACKET_BYTES]
                                 ).decode("ascii"),
                                 sglang={
-                                    "seq": seq,
-                                    "t_start_ms": offset / 2 / SAMPLE_RATE * 1000,
+                                    "seq": sequence,
+                                    "t_start_ms": byte_offset / 2 / SAMPLE_RATE * 1000,
                                 },
                             )
+                    else:
+                        pass
                     if streamed:
                         await asyncio.sleep(
                             max(
@@ -216,9 +278,15 @@ async def run_session(
                         if not aborted.is_set():
                             await send("sglang.input_audio.end")
                             await settle("sglang.input_audio.drained")
+                        else:
+                            pass
+                    else:
+                        pass
                     closed = seen.setdefault("session.closed", asyncio.Event())
                     if not fatal and not closed.is_set():
                         await send("session.close")
+                    else:
+                        pass
                     await closed.wait()
 
                 receiver = asyncio.create_task(receive())
@@ -229,7 +297,7 @@ async def run_session(
                     )
                     if receiver in done:
                         await receiver
-                        # Note (wenyao): No receipts can arrive after receiver exit.
+                        # note (wenyao): No receipts can arrive after receiver exit.
                         try:
                             await asyncio.wait_for(driver, POST_CLOSE_SECONDS)
                         except asyncio.TimeoutError:

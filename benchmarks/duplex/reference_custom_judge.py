@@ -9,15 +9,15 @@ import math
 import time
 from argparse import Namespace
 from collections import Counter
-from collections.abc import Callable
 from pathlib import Path
 from statistics import NormalDist
-from types import SimpleNamespace
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from benchmarks.duplex.reference_behavior import (
+    JudgeTransport,
+    Sleep,
     behavior_units,
     build_request,
     openai_transport,
@@ -38,7 +38,7 @@ from benchmarks.duplex.reference_core import (
     sha256_file,
     utc_now,
 )
-from benchmarks.duplex.reference_source import load_official_behavior
+from benchmarks.duplex.reference_source import ReferenceBehavior, load_official_behavior
 
 
 class CustomDecoding(BaseModel):
@@ -69,12 +69,12 @@ class CustomJudgeConfig(BaseModel):
 
 
 def build_custom_request(
-    official: SimpleNamespace,
+    official: ReferenceBehavior,
     engine: Engine,
     sid: str,
     config: CustomJudgeConfig,
     experiment_hash: str,
-) -> dict:
+) -> dict[str, JsonValue]:
     request = build_request(official, engine.sample_dir(sid))
     body = request["body"]
     body.update(
@@ -110,9 +110,9 @@ def build_custom_request(
 def summarize_custom(
     args: Namespace,
     engines: list[Engine],
-    states: dict[str, dict[str, dict]],
-    experiment: dict,
-) -> dict:
+    states: dict[str, dict[str, dict[str, JsonValue]]],
+    experiment: dict[str, JsonValue],
+) -> dict[str, JsonValue]:
     summary = {
         "generated_at": utc_now(),
         "scope": "custom_behavior_judge_non_official",
@@ -127,27 +127,33 @@ def summarize_custom(
         "engines": {},
     }
     for engine in engines:
-        sids = selected(engine, args.only)
-        groups = {"all": sids}
-        for sid in sids:
-            groups.setdefault(engine.samples[sid]["category"], []).append(sid)
+        sample_ids = selected(engine, args.only)
+        groups = {"all": sample_ids}
+        for sample_id in sample_ids:
+            groups.setdefault(engine.samples[sample_id]["category"], []).append(
+                sample_id
+            )
         summary["engines"][engine.name] = {}
         for group, members in sorted(groups.items()):
-            rows = [states[engine.name][sid] for sid in members]
-            statuses = Counter(row["status"] for row in rows)
-            labels = Counter(row["label"] for row in rows if row["status"] == "valid")
-            valid_n = sum(labels.values())
+            sample_states = [states[engine.name][sample_id] for sample_id in members]
+            statuses = Counter(sample_state["status"] for sample_state in sample_states)
+            labels = Counter(
+                sample_state["label"]
+                for sample_state in sample_states
+                if sample_state["status"] == "valid"
+            )
+            valid_count = sum(labels.values())
             proportions = {}
             z_squared = NormalDist().inv_cdf(0.975) ** 2
             for label in C_LABELS:
-                if valid_n:
-                    proportion = labels[label] / valid_n
-                    denominator = 1 + z_squared / valid_n
-                    center = (proportion + z_squared / (2 * valid_n)) / denominator
+                if valid_count:
+                    proportion = labels[label] / valid_count
+                    denominator = 1 + z_squared / valid_count
+                    center = (proportion + z_squared / (2 * valid_count)) / denominator
                     margin = (
                         math.sqrt(
-                            z_squared * proportion * (1 - proportion) / valid_n
-                            + z_squared**2 / (4 * valid_n**2)
+                            z_squared * proportion * (1 - proportion) / valid_count
+                            + z_squared**2 / (4 * valid_count**2)
                         )
                         / denominator
                     )
@@ -161,8 +167,8 @@ def summarize_custom(
                 }
             reasons = Counter(
                 reason
-                for sid in members
-                for variant in engine.samples[sid]["variants"].values()
+                for sample_id in members
+                for variant in engine.samples[sample_id]["variants"].values()
                 if not variant["eligible"]
                 for reason in variant["reasons"]
             )
@@ -170,17 +176,25 @@ def summarize_custom(
                 "selected_pairs": len(members),
                 "selected_sessions": len(members) * len(VARIANTS),
                 "eligible_sessions": sum(
-                    engine.eligible(sid, variant)
-                    for sid in members
+                    engine.eligible(sample_id, variant)
+                    for sample_id in members
                     for variant in VARIANTS
                 ),
-                "eligible_pairs": sum(row["eligible"] for row in rows),
-                "asr_ready_pairs": sum(row["asr_ready"] for row in rows),
-                "attempted_pairs": sum(row["attempts"] > 0 for row in rows),
-                "attempts": sum(row["attempts"] for row in rows),
+                "eligible_pairs": sum(
+                    sample_state["eligible"] for sample_state in sample_states
+                ),
+                "asr_ready_pairs": sum(
+                    sample_state["asr_ready"] for sample_state in sample_states
+                ),
+                "attempted_pairs": sum(
+                    sample_state["attempts"] > 0 for sample_state in sample_states
+                ),
+                "attempts": sum(
+                    sample_state["attempts"] for sample_state in sample_states
+                ),
                 "status": dict(sorted(statuses.items())),
                 "ineligible_variant_reasons": dict(sorted(reasons.items())),
-                "valid_n": valid_n,
+                "valid_n": valid_count,
                 "valid_label_proportions": proportions,
             }
     atomic_write_json(args.out / "summary.json", summary)
@@ -192,9 +206,9 @@ def run_custom(
     args: Namespace,
     engines: list[Engine],
     paths: dict[str, Path],
-    transport: Callable[[dict, int], dict] | None = None,
-    sleep: Callable[[float], None] = time.sleep,
-) -> Counter:
+    transport: JudgeTransport | None = None,
+    sleep: Sleep = time.sleep,
+) -> Counter[str]:
     for source in (args.source_scores, *(engine.tree for engine in engines)):
         if args.out.resolve().is_relative_to(
             source.resolve()
@@ -202,13 +216,17 @@ def run_custom(
             raise SystemExit(
                 "custom --out must be independent of source scores and audio"
             )
+        else:
+            pass
     config = CustomJudgeConfig.model_validate(read_json(args.judge_config))
     launch_path = (args.judge_config.parent / config.server_launch_receipt).resolve()
     if sha256_file(launch_path) != config.server_launch_receipt_sha256:
         raise SystemExit("server launch receipt differs from the pinned SHA-256")
+    else:
+        pass
     official = load_official_behavior(paths["behavior"], paths["instruction"])
-    custom = copy.copy(official)
-    custom.model = config.served_model
+    custom_behavior = copy.copy(official)
+    custom_behavior.model = config.served_model
     experiment = {
         "scope": "custom_behavior_judge_non_official",
         "reference_revision": REFERENCE_REVISION,
@@ -238,51 +256,73 @@ def run_custom(
         if identity_path.exists():
             if read_json(identity_path) != experiment:
                 raise SystemExit("custom judge identity changed; use a new --out")
+            else:
+                pass
         elif any(path.name != ".lock" for path in args.out.iterdir()):
             raise SystemExit(
                 "custom judge requires a new --out or matching experiment.json"
             )
         else:
             atomic_write_json(identity_path, experiment)
-        states, todo = {}, []
+        states, pending_requests = {}, []
         for engine in engines:
             ready, blocked = behavior_units(engine, args.only)
             states[engine.name] = {}
-            for sid in selected(engine, args.only):
-                folder = args.out / "engines" / engine.name / "samples" / sid
+            for sample_id in selected(engine, args.only):
+                folder = args.out / "engines" / engine.name / "samples" / sample_id
                 result_path = folder / "result.json"
-                previous = read_json(result_path) if result_path.exists() else None
-                row = {
-                    "eligible": all(engine.eligible(sid, v) for v in VARIANTS),
-                    "asr_ready": sid in ready,
-                    "attempts": len(previous["attempts"]) if previous else 0,
+                previous_result = (
+                    read_json(result_path) if result_path.exists() else None
+                )
+                sample_state = {
+                    "eligible": all(
+                        engine.eligible(sample_id, variant) for variant in VARIANTS
+                    ),
+                    "asr_ready": sample_id in ready,
+                    "attempts": (
+                        len(previous_result["attempts"]) if previous_result else 0
+                    ),
                     "label": None,
-                    "status": blocked.get(sid, "not_judged"),
+                    "status": blocked.get(sample_id, "not_judged"),
                 }
-                states[engine.name][sid] = row
-                if sid in blocked:
+                states[engine.name][sample_id] = sample_state
+                if sample_id in blocked:
                     continue
+                else:
+                    pass
                 request = build_custom_request(
-                    official, engine, sid, config, experiment_hash
+                    official, engine, sample_id, config, experiment_hash
                 )
                 request_path = folder / "request.json"
                 if request_path.exists():
                     if read_json(request_path) != request:
-                        row["status"] = "stale_request"
+                        sample_state["status"] = "stale_request"
                         continue
+                    else:
+                        pass
                 else:
                     atomic_write_json(request_path, request)
-                if previous is not None:
-                    if previous["request_hash"] != request["request_hash"]:
-                        row["status"] = "result_request_mismatch"
+                if previous_result is not None:
+                    if previous_result["request_hash"] != request["request_hash"]:
+                        sample_state["status"] = "result_request_mismatch"
                         continue
-                    row.update(status=previous["status"], label=previous["label"])
-                    if previous["status"] != "failed" or not args.retry_failed:
+                    else:
+                        pass
+                    sample_state.update(
+                        status=previous_result["status"], label=previous_result["label"]
+                    )
+                    if previous_result["status"] != "failed" or not args.retry_failed:
                         continue
-                todo.append((result_path, request, previous, row))
+                    else:
+                        pass
+                else:
+                    pass
+                pending_requests.append(
+                    (result_path, request, previous_result, sample_state)
+                )
         if args.phase == "custom-judge":
-            todo = todo[: args.limit]
-            progress = Progress(args.out, "custom-judge", len(todo))
+            pending_requests = pending_requests[: args.limit]
+            progress = Progress(args.out, "custom-judge", len(pending_requests))
             record_identity(
                 args.out,
                 "custom-judge",
@@ -294,13 +334,15 @@ def run_custom(
                     "sdk_max_retries": 0,
                 },
             )
-            if todo:
+            if pending_requests:
                 transport = transport or openai_transport(
                     args.api_key_env, args.timeout_s, args.base_url
                 )
-            for result_path, request, previous, row in todo:
+            else:
+                pass
+            for result_path, request, previous_result, sample_state in pending_requests:
                 result = run_judgment(
-                    custom,
+                    custom_behavior,
                     request["body"],
                     request["seeds"],
                     transport,
@@ -308,24 +350,34 @@ def run_custom(
                     sleep,
                 )
                 if result["status"] in ("valid", "invalid_label"):
-                    choice = result["attempts"][-1]["response"]["choices"][0]
-                    if choice.get("finish_reason") != "stop":
+                    completion_choice = result["attempts"][-1]["response"]["choices"][0]
+                    if completion_choice.get("finish_reason") != "stop":
                         result.update(status="invalid_finish", label=None)
+                    else:
+                        pass
+                else:
+                    pass
                 result.update(
                     request_hash=request["request_hash"], finished_at=utc_now()
                 )
-                if previous:
-                    result["attempts"] = previous["attempts"] + result["attempts"]
+                if previous_result:
+                    result["attempts"] = (
+                        previous_result["attempts"] + result["attempts"]
+                    )
+                else:
+                    pass
                 atomic_write_json(result_path, result)
-                row.update(
+                sample_state.update(
                     status=result["status"],
                     label=result["label"],
                     attempts=len(result["attempts"]),
                 )
                 progress.add(result["status"])
             progress.write(finished=True)
+        else:
+            pass
         summary = summarize_custom(args, engines, states, experiment)
-        counts: Counter = Counter()
+        counts: Counter[str] = Counter()
         for engine in summary["engines"].values():
             counts.update(engine["all"]["status"])
         return counts

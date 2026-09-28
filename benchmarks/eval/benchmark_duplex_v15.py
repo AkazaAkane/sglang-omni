@@ -17,7 +17,7 @@ from benchmarks.duplex.v15_transcribe import add_transcribe_arguments
 
 
 def record(args: argparse.Namespace) -> int:
-    run = asyncio.run(
+    run_manifest = asyncio.run(
         run_samples(
             args.dataset_root,
             url=args.url,
@@ -37,7 +37,7 @@ def record(args: argparse.Namespace) -> int:
         )
     )
     manifest, _, _ = load_run(args.output)
-    summary = accounting(manifest, run)
+    summary = accounting(manifest, run_manifest)
     print(json.dumps(summary, indent=2, allow_nan=False))
     return (
         0 if summary["variant_status"] == {"pass": summary["selected_variants"]} else 1
@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     record_parser.set_defaults(handler=record)
 
     timeline_help = "; ".join(
-        f"{name}: {spec['meaning']}" for name, spec in TIMELINES.items()
+        f"{name}: {timeline['meaning']}" for name, timeline in TIMELINES.items()
     )
 
     transcribe_parser = commands.add_parser(
@@ -87,3 +87,5 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+else:
+    pass

@@ -7,23 +7,24 @@ import hashlib
 import logging
 from dataclasses import asdict
 from pathlib import Path
-from types import ModuleType
-from typing import Literal
+from typing import Literal, Protocol
 
 import numpy as np
 import soundfile
 from pydantic import JsonValue
 
-from benchmarks.duplex import v15_dataset
+import benchmarks.duplex.v15_dataset as v15_dataset
 from benchmarks.duplex.artifacts import replay_run, source_fingerprint
 from benchmarks.duplex.client import PACKET_MS, SAMPLE_RATE, TRANSPORT, run_session
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, ProfileName
+from benchmarks.duplex.v10_dataset import Sample as V10Sample
 from benchmarks.duplex.v15_audio import (
     PACING_TOLERANCE_S,
     normalize_audio,
     reconstruct_output,
     write_json,
 )
+from benchmarks.duplex.v15_dataset import Sample as V15Sample
 from benchmarks.eval.benchmark_duplex import MAX_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,17 @@ RUNNER_FILES = (
     "benchmarks/duplex/v15_runner.py",
 )
 VARIANT_STATUSES = ("pending", "invalid", "error", "fail", "not_exercised", "pass")
+
+
+class DuplexDataset(Protocol):
+    def discover_samples(
+        self,
+        root: Path,
+        sample_ids: list[str] | None = None,
+        max_per_subset: int | None = None,
+    ) -> list[V10Sample] | list[V15Sample]: ...
+
+    def inventory(self, root: Path) -> dict[str, dict[str, int] | list[str]]: ...
 
 
 def summarize(samples: list[dict[str, JsonValue]]) -> dict[str, JsonValue]:
@@ -70,39 +82,42 @@ async def run_samples(
     timeout_s: float,
     sample_ids: list[str] | None = None,
     max_per_subset: int | None = None,
-    dataset: ModuleType = v15_dataset,
-    variants: dict[str, str] = VARIANTS,
+    dataset: DuplexDataset = v15_dataset,
+    variants: dict[str, str] | None = None,
     kind: str = RUN_KIND,
     profile: ProfileName = DEFAULT_PROFILE,
 ) -> dict[str, JsonValue]:
-    """Run every selected sample variant; each failure stays in the selected denominator.
-
-    dataset supplies discover_samples and inventory; variants maps a variant name to
-    the sample path key it sends.
-    """
+    """Run selected sample variants, retaining failures in the selected denominator."""
     if not dataset_revision:
         raise ValueError("dataset_revision must be nonempty")
+    else:
+        pass
     if not 0 < timeout_s <= MAX_TIMEOUT_S:
         raise ValueError(f"timeout_s must be positive and at most {MAX_TIMEOUT_S}")
+    else:
+        pass
+    variants = VARIANTS if variants is None else variants
     dataset_root = dataset_root.resolve()
     samples = dataset.discover_samples(dataset_root, sample_ids, max_per_subset)
     if not samples:
         raise ValueError("no samples selected")
+    else:
+        pass
     output.mkdir(parents=True, exist_ok=False)
 
     source = source_fingerprint()
-    repo = Path(__file__).resolve().parents[2]
+    repository_root = Path(__file__).resolve().parents[2]
     source["files_sha256"].update(
         {
-            path: hashlib.sha256((repo / path).read_bytes()).hexdigest()
+            path: hashlib.sha256((repository_root / path).read_bytes()).hexdigest()
             for path in RUNNER_FILES
         }
     )
-    entries = []
+    sample_records = []
     for sample in samples:
-        entry = {**asdict(sample), "variants": {}}
-        for variant, key in variants.items():
-            entry["variants"][variant] = {
+        sample_record = {**asdict(sample), "variants": {}}
+        for variant, source_key in variants.items():
+            sample_record["variants"][variant] = {
                 "directory": str(Path("samples") / sample.directory / variant),
                 "status": "invalid" if sample.errors else "pending",
                 "protocol_verdict": None,
@@ -110,8 +125,8 @@ async def run_samples(
                 "errors": list(sample.errors),
                 "violations": [],
                 "source": {
-                    "file": sample.paths.get(key),
-                    "sha256": sample.sha256.get(key),
+                    "file": sample.paths.get(source_key),
+                    "sha256": sample.sha256.get(source_key),
                 },
                 "normalization": None,
                 "input": None,
@@ -119,7 +134,7 @@ async def run_samples(
                 "output": None,
                 "files": {},
             }
-        entries.append(entry)
+        sample_records.append(sample_record)
 
     write_json(
         output / "manifest.json",
@@ -149,14 +164,19 @@ async def run_samples(
             },
             "samples": [
                 {
-                    "id": entry["id"],
-                    "errors": entry["errors"],
+                    "id": sample_record["id"],
+                    "errors": sample_record["errors"],
                     "variants": {
-                        name: {key: state[key] for key in ("directory", "source")}
-                        for name, state in entry["variants"].items()
+                        variant_name: {
+                            source_key: variant_state[source_key]
+                            for source_key in ("directory", "source")
+                        }
+                        for variant_name, variant_state in sample_record[
+                            "variants"
+                        ].items()
                     },
                 }
-                for entry in entries
+                for sample_record in sample_records
             ],
         },
     )
@@ -167,34 +187,40 @@ async def run_samples(
         result = {
             "schema_version": 1,
             "status": status,
-            "summary": summarize(entries),
-            "samples": entries,
+            "summary": summarize(sample_records),
+            "samples": sample_records,
         }
         write_json(output / "run.json", result)
         return result
 
     save("preparing")
-    for sample, entry in zip(samples, entries):
-        for variant, key in variants.items():
-            state = entry["variants"][variant]
-            if state["status"] != "pending":
+    for sample, sample_record in zip(samples, sample_records):
+        for variant, source_key in variants.items():
+            variant_state = sample_record["variants"][variant]
+            if variant_state["status"] != "pending":
                 continue
-            variant_dir = output / state["directory"]
+            else:
+                pass
+            variant_dir = output / variant_state["directory"]
             try:
-                pcm, normalization = normalize_audio(dataset_root / sample.paths[key])
+                pcm, normalization = normalize_audio(
+                    dataset_root / sample.paths[source_key]
+                )
                 duration_s = len(pcm) / (SAMPLE_RATE * 2)
-                state["normalization"] = normalization
-                state["input"] = {
+                variant_state["normalization"] = normalization
+                variant_state["input"] = {
                     "sha256": hashlib.sha256(pcm).hexdigest(),
                     "duration_s": duration_s,
                 }
                 if duration_s >= timeout_s:
-                    state["status"] = "invalid"
-                    state["errors"].append(
+                    variant_state["status"] = "invalid"
+                    variant_state["errors"].append(
                         f"input duration {duration_s:.3f}s is not below timeout "
                         f"{timeout_s}s"
                     )
                     continue
+                else:
+                    pass
                 variant_dir.mkdir(parents=True)
                 (variant_dir / "input.pcm").write_bytes(pcm)
                 soundfile.write(
@@ -221,7 +247,7 @@ async def run_samples(
                         },
                         "input": {
                             "file": "input.pcm",
-                            "sha256": state["input"]["sha256"],
+                            "sha256": variant_state["input"]["sha256"],
                             "sample_rate": SAMPLE_RATE,
                         },
                         "cases": [
@@ -234,19 +260,23 @@ async def run_samples(
                     },
                 )
             except Exception as exc:
-                logger.exception(f"variant {entry['id']}/{variant} preparation failed")
-                state["status"] = "error"
-                state["errors"].append(
+                logger.exception(
+                    f"variant {sample_record['id']}/{variant} preparation failed"
+                )
+                variant_state["status"] = "error"
+                variant_state["errors"].append(
                     f"preparation failed: {type(exc).__name__}: {exc}"
                 )
                 save("preparing")
 
     save("running")
-    for entry in entries:
-        for variant, state in entry["variants"].items():
-            if state["status"] != "pending":
+    for sample_record in sample_records:
+        for variant, variant_state in sample_record["variants"].items():
+            if variant_state["status"] != "pending":
                 continue
-            variant_dir = output / state["directory"]
+            else:
+                pass
+            variant_dir = output / variant_state["directory"]
             try:
                 await run_session(
                     url,
@@ -256,30 +286,34 @@ async def run_samples(
                     timeout_s=timeout_s,
                     profile=profile,
                 )
-                report = replay_run(variant_dir)
-                write_json(variant_dir / "report.json", report)
-                (case,) = report["cases"]
-                playout = reconstruct_output(variant_dir, profile=profile)
+                protocol_report = replay_run(variant_dir)
+                write_json(variant_dir / "report.json", protocol_report)
+                (case_report,) = protocol_report["cases"]
+                playout_report = reconstruct_output(variant_dir, profile=profile)
             except Exception as exc:
-                logger.exception(f"variant {entry['id']}/{variant} failed")
-                state["status"] = "error"
-                state["errors"].append(f"{type(exc).__name__}: {exc}")
+                logger.exception(f"variant {sample_record['id']}/{variant} failed")
+                variant_state["status"] = "error"
+                variant_state["errors"].append(f"{type(exc).__name__}: {exc}")
             else:
-                state["protocol_verdict"] = case["status"]
-                state["violations"] = case["violations"]
-                state["errors"].extend(playout["errors"])
-                state["status"] = "fail" if playout["errors"] else case["status"]
-                state["qualified"] = state["status"] == "pass"
-                state["input_timing"] = playout["input_timing"]
-                state["output"] = {
-                    "media_pcm_sha256": playout["pcm_sha256"].get("output-media.wav"),
-                    "media_duration_s": playout["media_samples"]
-                    / playout["sample_rate"],
-                    "playout_duration_s": playout["playout_samples"]
-                    / playout["sample_rate"],
-                    "initial_delay_s": playout["initial_delay_s"],
+                variant_state["protocol_verdict"] = case_report["status"]
+                variant_state["violations"] = case_report["violations"]
+                variant_state["errors"].extend(playout_report["errors"])
+                variant_state["status"] = (
+                    "fail" if playout_report["errors"] else case_report["status"]
+                )
+                variant_state["qualified"] = variant_state["status"] == "pass"
+                variant_state["input_timing"] = playout_report["input_timing"]
+                variant_state["output"] = {
+                    "media_pcm_sha256": playout_report["pcm_sha256"].get(
+                        "output-media.wav"
+                    ),
+                    "media_duration_s": playout_report["media_samples"]
+                    / playout_report["sample_rate"],
+                    "playout_duration_s": playout_report["playout_samples"]
+                    / playout_report["sample_rate"],
+                    "initial_delay_s": playout_report["initial_delay_s"],
                 }
-            state["files"] = {
+            variant_state["files"] = {
                 path.name: str(path.relative_to(output))
                 for path in sorted(variant_dir.iterdir())
                 if not path.name.startswith(".")

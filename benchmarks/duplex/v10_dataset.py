@@ -48,7 +48,7 @@ class Sample:
     paths: dict[str, str] = field(default_factory=dict)
     sha256: dict[str, str] = field(default_factory=dict)
     audio: dict[str, int | float | str] = field(default_factory=dict)
-    # Note (Jeffro): Pause samples may list several pauses; the other tasks have one event.
+    # note (Jeffro): Pause samples may list several pauses; the other tasks have one event.
     # A turn-taking event may be zero-length; its start is the user turn end.
     events: list[list[float]] = field(default_factory=list)
     texts: dict[str, str] = field(default_factory=dict)
@@ -69,11 +69,14 @@ def finite_span(value: JsonValue) -> list[float] | None:
         isinstance(value, list)
         and len(value) == 2
         and all(
-            isinstance(bound, (int, float)) and math.isfinite(bound) for bound in value
+            isinstance(boundary_s, (int, float)) and math.isfinite(boundary_s)
+            for boundary_s in value
         )
         and 0 <= value[0] <= value[1]
     ):
         return [float(value[0]), float(value[1])]
+    else:
+        pass
     return None
 
 
@@ -85,30 +88,40 @@ def validate_sample(root: Path, subset: str, name: str) -> Sample:
     files = {"input": "input.wav"}
     if task in ANNOTATION_FILES:
         files["annotation"] = ANNOTATION_FILES[task]
+    else:
+        pass
     for key, filename in files.items():
         path = sample_dir / filename
         if path.is_symlink() or not path.is_file():
             sample.errors.append(f"missing {filename}")
             continue
+        else:
+            pass
         sample.paths[key] = f"{directory}/{filename}"
         sample.sha256[key] = hashlib.sha256(path.read_bytes()).hexdigest()
     if "input" in sample.paths:
         try:
-            info = soundfile.info(str(sample_dir / "input.wav"))
+            source_audio = soundfile.info(str(sample_dir / "input.wav"))
         except (OSError, RuntimeError) as exc:
             sample.errors.append(f"input.wav unreadable: {exc}")
         else:
-            if info.frames <= 0:
+            if source_audio.frames <= 0:
                 sample.errors.append("input.wav has no audio frames")
+            else:
+                pass
             sample.audio = {
-                "sample_rate": info.samplerate,
-                "channels": info.channels,
-                "frames": info.frames,
-                "duration_s": info.frames / info.samplerate,
-                "subtype": info.subtype,
+                "sample_rate": source_audio.samplerate,
+                "channels": source_audio.channels,
+                "frames": source_audio.frames,
+                "duration_s": source_audio.frames / source_audio.samplerate,
+                "subtype": source_audio.subtype,
             }
+    else:
+        pass
     if "annotation" not in sample.paths:
         return sample
+    else:
+        pass
     annotation_name = files["annotation"]
     try:
         entries = json.loads((root / sample.paths["annotation"]).read_text("utf-8"))
@@ -118,9 +131,15 @@ def validate_sample(root: Path, subset: str, name: str) -> Sample:
     if not isinstance(entries, list) or not entries:
         sample.errors.append(f"{annotation_name} must be a nonempty list")
         return sample
+    else:
+        pass
     duration_s = sample.audio.get("duration_s")
-    for index, entry in enumerate(entries):
-        span = finite_span(entry.get("timestamp")) if isinstance(entry, dict) else None
+    for index, annotation in enumerate(entries):
+        span = (
+            finite_span(annotation.get("timestamp"))
+            if isinstance(annotation, dict)
+            else None
+        )
         if span is None:
             sample.errors.append(f"{annotation_name}[{index}] lacks a finite timestamp")
         elif duration_s is not None and span[1] > duration_s:
@@ -131,14 +150,18 @@ def validate_sample(root: Path, subset: str, name: str) -> Sample:
             sample.events.append(span)
     if task != "pause_handling" and len(entries) != 1:
         sample.errors.append(f"{annotation_name} must hold exactly one event")
+    else:
+        pass
     if task == "user_interruption":
-        entry = entries[0]
+        annotation = entries[0]
         for key in ("context", "interrupt"):
-            text = entry.get(key) if isinstance(entry, dict) else None
+            text = annotation.get(key) if isinstance(annotation, dict) else None
             if not isinstance(text, str) or not text.strip():
                 sample.errors.append(f"{annotation_name} lacks {key} text")
             else:
                 sample.texts[key] = text
+    else:
+        pass
     return sample
 
 

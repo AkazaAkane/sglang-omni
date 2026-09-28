@@ -11,6 +11,7 @@ import statistics
 from collections import Counter
 from math import gcd
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import soundfile
@@ -22,10 +23,10 @@ from scipy.spatial.distance import jensenshannon
 from benchmarks.duplex.v10_dataset import Task
 
 SCORING_VERSION = "fdb-v10-synthetic-v2"
-# Note (Jeffro): Upstream takeover rule; output this short counts as a backchannel, not a turn.
+# note (Jeffro): Upstream takeover rule; output this short counts as a backchannel, not a turn.
 TAKEOVER_MAX_DURATION_S = 1.0
 TAKEOVER_MAX_WORDS = 3
-# Note (Jeffro): Upstream backchannel rule; a speech segment this long is a full turn.
+# note (Jeffro): Upstream backchannel rule; a speech segment this long is a full turn.
 BACKCHANNEL_MAX_SEGMENT_S = 3.0
 BACKCHANNEL_MAX_WORDS = 2
 BACKCHANNEL_WINDOW_S = 0.2
@@ -70,7 +71,7 @@ TASKS: tuple[Task, ...] = (*WORD_TASKS, "backchannel")
 CENSOR_TOLERANCE_S = 0.05
 
 
-# Note (wenyao): Float rounding can put segment ends just past the audio duration.
+# note (wenyao): Float rounding can put segment ends just past the audio duration.
 DURATION_TOLERANCE_S = 1e-3
 SILERO_VAD_CONFIG = {
     "sampling_rate": 16000,
@@ -98,6 +99,8 @@ def check_interval(start_s: float, end_s: float, duration_s: float, name: str) -
         raise ValueError(
             f"{name} [{start_s}, {end_s}] is reversed or outside [0, {duration_s}]"
         )
+    else:
+        pass
 
 
 def validate_segments(
@@ -109,10 +112,14 @@ def validate_segments(
     for index, segment in enumerate(segments):
         if len(segment) != 2:
             raise ValueError(f"{name} segment {index} must be [start, end]")
+        else:
+            pass
         start_s, end_s = float(segment[0]), float(segment[1])
         check_interval(start_s, end_s, duration_s, f"{name} segment {index}")
         if start_s < previous_end:
             raise ValueError(f"{name} segment {index} overlaps or is out of order")
+        else:
+            pass
         checked.append((start_s, end_s))
         previous_end = end_s
     return checked
@@ -120,15 +127,17 @@ def validate_segments(
 
 def silero_speech_segments(wav_path: str | Path) -> dict[str, JsonValue]:
     """Detect speech in a PCM WAV with the frozen Silero VAD configuration."""
-    # Note (wenyao): Word-timestamp scoring and tests do not need torch or Silero.
+    # note (wenyao): Word-timestamp scoring and tests do not need torch or Silero.
     import torch
     from silero_vad import get_speech_timestamps, load_silero_vad
 
-    info = soundfile.info(str(wav_path))
-    if info.format != "WAV" or not info.subtype.startswith("PCM"):
+    source_audio = soundfile.info(str(wav_path))
+    if source_audio.format != "WAV" or not source_audio.subtype.startswith("PCM"):
         raise ValueError(
-            f"{wav_path} is {info.format}/{info.subtype}, expected PCM WAV"
+            f"{wav_path} is {source_audio.format}/{source_audio.subtype}, expected PCM WAV"
         )
+    else:
+        pass
     audio, sample_rate = soundfile.read(str(wav_path), dtype="float32", always_2d=True)
     audio = audio.mean(axis=1)
     duration_s = len(audio) / sample_rate
@@ -136,6 +145,8 @@ def silero_speech_segments(wav_path: str | Path) -> dict[str, JsonValue]:
     if sample_rate != target_rate:
         divisor = gcd(sample_rate, target_rate)
         audio = resample_poly(audio, target_rate // divisor, sample_rate // divisor)
+    else:
+        pass
     timestamps = get_speech_timestamps(
         torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)),
         load_silero_vad(onnx=SILERO_VAD_CONFIG["onnx"]),
@@ -146,12 +157,16 @@ def silero_speech_segments(wav_path: str | Path) -> dict[str, JsonValue]:
         speech_pad_ms=SILERO_VAD_CONFIG["speech_pad_ms"],
     )
     segments = [
-        [item["start"] / target_rate, min(item["end"] / target_rate, duration_s)]
-        for item in timestamps
+        [
+            timestamp_span["start"] / target_rate,
+            min(timestamp_span["end"] / target_rate, duration_s),
+        ]
+        for timestamp_span in timestamps
     ]
     return {
         "segments": [
-            list(pair) for pair in validate_segments(segments, duration_s, "vad")
+            list(interval)
+            for interval in validate_segments(segments, duration_s, "vad")
         ],
         "duration_s": duration_s,
         "sample_rate": sample_rate,
@@ -181,6 +196,8 @@ def takes_turn(chunks: list[dict[str, JsonValue]]) -> bool:
     """Apply the upstream rule to word chunks with absolute [start, end] timestamps."""
     if not chunks:
         return False
+    else:
+        pass
     duration_s = chunks[-1]["timestamp"][1] - chunks[0]["timestamp"][0]
     return duration_s >= TAKEOVER_MAX_DURATION_S or len(chunks) > TAKEOVER_MAX_WORDS
 
@@ -189,7 +206,9 @@ def score_pause_handling(
     *, sample_id: str, chunks: list[dict[str, JsonValue]], input_duration_s: float
 ) -> dict[str, JsonValue]:
     """Any turn taken anywhere inside the input window is a failure to hold back."""
-    kept = [chunk for chunk in chunks if chunk["timestamp"][0] < input_duration_s]
+    window_chunks = [
+        chunk for chunk in chunks if chunk["timestamp"][0] < input_duration_s
+    ]
     return {
         "version": SCORING_VERSION,
         "config_hash": SCORING_CONFIG_HASH,
@@ -197,8 +216,8 @@ def score_pause_handling(
         "task": "pause_handling",
         "status": "scored",
         "window_s": [0.0, input_duration_s],
-        "num_words": len(kept),
-        "takeover": takes_turn(kept),
+        "num_words": len(window_chunks),
+        "takeover": takes_turn(window_chunks),
     }
 
 
@@ -212,26 +231,23 @@ def score_response(
     input_duration_s: float,
     output_segments: list[list[float]],
 ) -> dict[str, JsonValue]:
-    """Takeover and latency after the user stops, gated on what the model was doing.
-
-    A turn-taking sample whose model is already speaking when the user turn ends
-    is not a response; an interruption of a silent model interrupted nothing.
-    """
+    """Score responses within the input window using VAD eligibility gates."""
     speaking_at_event = any(
-        start <= event_start_s < end for start, end in output_segments
+        start_s <= event_start_s < end_s for start_s, end_s in output_segments
     )
+    status: Literal["spoke_before_turn_end", "not_exercised", "scored"]
     if task == "turn_taking" and speaking_at_event:
         status = "spoke_before_turn_end"
     elif task == "user_interruption" and not speaking_at_event:
         status = "not_exercised"
     else:
         status = "scored"
-    kept = [
+    window_chunks = [
         chunk
         for chunk in chunks
         if event_end_s <= chunk["timestamp"][0] < input_duration_s
     ]
-    takeover = takes_turn(kept)
+    takeover = takes_turn(window_chunks)
     return {
         "version": SCORING_VERSION,
         "config_hash": SCORING_CONFIG_HASH,
@@ -241,11 +257,14 @@ def score_response(
         "window_s": [event_end_s, input_duration_s],
         "speaking_at_event": speaking_at_event,
         "right_censored": any(
-            end >= input_duration_s - CENSOR_TOLERANCE_S for _, end in output_segments
+            end_s >= input_duration_s - CENSOR_TOLERANCE_S
+            for _, end_s in output_segments
         ),
-        "num_words": len(kept),
+        "num_words": len(window_chunks),
         "takeover": takeover,
-        "latency_s": kept[0]["timestamp"][0] - event_end_s if takeover else None,
+        "latency_s": (
+            window_chunks[0]["timestamp"][0] - event_end_s if takeover else None
+        ),
     }
 
 
@@ -263,10 +282,14 @@ def score_backchannel(
     for start_s, end_s in output_segments:
         if start_s >= input_duration_s:
             continue
+        else:
+            pass
         end_s = min(end_s, input_duration_s)
         if end_s - start_s > BACKCHANNEL_MAX_SEGMENT_S:
             takeover = True
             continue
+        else:
+            pass
         words = [
             chunk
             for chunk in chunks
@@ -277,25 +300,33 @@ def score_backchannel(
             or len(words) > BACKCHANNEL_MAX_WORDS
         ):
             takeover = True
+        else:
+            pass
         backchannels.append([start_s, end_s])
-    jsd = None
+    timing_jsd = None
     if reference is not None:
         if not backchannels:
-            jsd = 1.0
+            timing_jsd = 1.0
         else:
-            bins = np.zeros(int(input_duration_s / BACKCHANNEL_WINDOW_S) + 1)
+            backchannel_bins = np.zeros(
+                int(input_duration_s / BACKCHANNEL_WINDOW_S) + 1
+            )
             for start_s, end_s in backchannels:
                 first = int(start_s / BACKCHANNEL_WINDOW_S)
-                last = min(int(end_s / BACKCHANNEL_WINDOW_S), len(bins) - 1)
-                bins[first : last + 1] += 1
-            bins += BACKCHANNEL_EPSILON
+                last = min(int(end_s / BACKCHANNEL_WINDOW_S), len(backchannel_bins) - 1)
+                backchannel_bins[first : last + 1] += 1
+            backchannel_bins += BACKCHANNEL_EPSILON
             resampled = interp1d(
                 np.linspace(0, 1, len(reference)),
                 reference,
                 kind="linear",
                 fill_value="extrapolate",
-            )(np.linspace(0, 1, len(bins)))
-            jsd = float(jensenshannon(bins / bins.sum(), resampled))
+            )(np.linspace(0, 1, len(backchannel_bins)))
+            timing_jsd = float(
+                jensenshannon(backchannel_bins / backchannel_bins.sum(), resampled)
+            )
+    else:
+        pass
     return {
         "version": SCORING_VERSION,
         "config_hash": SCORING_CONFIG_HASH,
@@ -306,7 +337,7 @@ def score_backchannel(
         "takeover": takeover,
         "backchannels": backchannels,
         "backchannel_rate_per_s": len(backchannels) / input_duration_s,
-        "timing_jsd": jsd,
+        "timing_jsd": timing_jsd,
     }
 
 
@@ -315,43 +346,67 @@ def summarize(
 ) -> dict[str, JsonValue]:
     """Per-task takeover rate and latency; selected samples without records count as missing."""
     by_id = {}
-    for record in records:
-        if record["sample_id"] in by_id:
-            raise ValueError(f"duplicate record for {record['sample_id']}")
-        if selected.get(record["sample_id"]) != record["task"]:
-            raise ValueError(f"record {record['sample_id']} is not a selected sample")
-        by_id[record["sample_id"]] = record
+    for score_record in records:
+        if score_record["sample_id"] in by_id:
+            raise ValueError(f"duplicate record for {score_record['sample_id']}")
+        else:
+            pass
+        if selected.get(score_record["sample_id"]) != score_record["task"]:
+            raise ValueError(
+                f"record {score_record['sample_id']} is not a selected sample"
+            )
+        else:
+            pass
+        by_id[score_record["sample_id"]] = score_record
     tasks = {}
     for task in TASKS:
-        ids = sorted(key for key, value in selected.items() if value == task)
-        present = [by_id[key] for key in ids if key in by_id]
-        scored = [record for record in present if record["status"] == "scored"]
+        sample_ids = sorted(key for key, value in selected.items() if value == task)
+        present = [by_id[key] for key in sample_ids if key in by_id]
+        scored = [
+            score_record
+            for score_record in present
+            if score_record["status"] == "scored"
+        ]
         summary = {
-            "selected": len(ids),
-            "missing": len(ids) - len(present),
-            "status_counts": dict(Counter(record["status"] for record in present)),
+            "selected": len(sample_ids),
+            "missing": len(sample_ids) - len(present),
+            "status_counts": dict(
+                Counter(score_record["status"] for score_record in present)
+            ),
             "scored": len(scored),
             "takeover_rate": (
-                sum(record["takeover"] for record in scored) / len(scored)
+                sum(score_record["takeover"] for score_record in scored) / len(scored)
                 if scored
                 else None
             ),
         }
         if task in ("turn_taking", "user_interruption"):
             summary["right_censored"] = sum(
-                bool(record["right_censored"]) for record in scored
+                bool(score_record["right_censored"]) for score_record in scored
             )
+        else:
+            pass
         if task == "backchannel":
             summary["backchannel_rate_per_s"] = describe(
-                [r["backchannel_rate_per_s"] for r in scored]
+                [score_record["backchannel_rate_per_s"] for score_record in scored]
             )
             summary["timing_jsd"] = describe(
-                [r["timing_jsd"] for r in scored if r["timing_jsd"] is not None]
+                [
+                    score_record["timing_jsd"]
+                    for score_record in scored
+                    if score_record["timing_jsd"] is not None
+                ]
             )
         elif task != "pause_handling":
             summary["latency_s"] = describe(
-                [r["latency_s"] for r in scored if r["latency_s"] is not None]
+                [
+                    score_record["latency_s"]
+                    for score_record in scored
+                    if score_record["latency_s"] is not None
+                ]
             )
+        else:
+            pass
         tasks[task] = summary
     return {
         "version": SCORING_VERSION,

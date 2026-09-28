@@ -46,6 +46,8 @@ def sha_file(path: Path) -> str:
 def decode_b64(value: JsonValue) -> bytes:
     if not isinstance(value, str):
         raise ValueError("payload is not a base64 string")
+    else:
+        pass
     try:
         return base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -68,10 +70,14 @@ def append_payload(
             float,
         ):
             return None, "append lacks matching sglang seq/t_start_ms"
+        else:
+            pass
         start = source["t_start_ms"] / 1000
         pcm = decode_b64(event.get("audio"))
         if len(pcm) % 2 or not np.array_equal(np.frombuffer(pcm, "<i2"), expected):
             return start, "serialized PCM16 differs from input.pcm"
+        else:
+            pass
     else:
         source = record.get("client_source") or {}
         valid = len(expected)
@@ -81,12 +87,18 @@ def append_payload(
             source.get("padded_samples"),
         ) != (index, valid, PACKET_SAMPLES - valid):
             return None, "append client_source index/valid/padded mismatch"
+        else:
+            pass
         if (event.get("format"), event.get("sample_rate_hz")) != ("pcm_f32le", RATE):
             return None, "append is not pcm_f32le at 16 kHz"
+        else:
+            pass
         start = source.get("start_s")
         data = decode_b64(event.get("audio"))
         if len(data) != 4 * PACKET_SAMPLES:
             return start, "serialized frame is not 1280 float32 samples"
+        else:
+            pass
         scaled = np.frombuffer(data, "<f4").astype(np.float64) * 32768
         if (
             not np.isfinite(scaled).all()
@@ -94,10 +106,14 @@ def append_payload(
             or np.any(scaled[valid:])
         ):
             return start, "serialized float32 frame differs from input.pcm/zero padding"
+        else:
+            pass
     if type(start) not in (int, float) or not math.isclose(
         start, index * PACKET_S, abs_tol=1e-9
     ):
         return start, "append source start is not index * 80 ms"
+    else:
+        pass
     return start, None
 
 
@@ -118,11 +134,17 @@ def check_completions(
         if completed is None:
             reasons.append(f"append {index} send completion not recorded")
             continue
+        else:
+            pass
         if completed < start or (previous is not None and completed < previous):
             reasons.append(f"append {index} send completion out of order")
+        else:
+            pass
         previous = completed
         if completed > deadlines[index]:
             reasons.append(f"append {index} send completed after v2 deadline")
+        else:
+            pass
 
 
 def check_send_receipts(
@@ -136,10 +158,14 @@ def check_send_receipts(
     if not path.is_file():
         reasons.append(f"{SEND_RECEIPTS} missing for campaign-adapter capture")
         return None, None
+    else:
+        pass
     try:
         rows = json.loads(path.read_text())["appends"]
         if not isinstance(rows, list):
             raise TypeError("appends is not a list")
+        else:
+            pass
     except (ValueError, KeyError, TypeError) as exc:
         reasons.append(f"{SEND_RECEIPTS} unreadable: {type(exc).__name__}")
         rows = []
@@ -147,14 +173,20 @@ def check_send_receipts(
         row.get("event_id") if isinstance(row, dict) else None for row in rows
     ] != append_ids:
         reasons.append(f"{SEND_RECEIPTS} append event_ids differ from trace")
+    else:
+        pass
     completions = [None] * len(append_times)
     for index, (row, start) in enumerate(zip(rows, append_times)):
         row = row if isinstance(row, dict) else {}
         completed = row.get("completed_s")
         if row.get("seq") != index or row.get("start_s") != start:
             reasons.append(f"append {index} send receipt seq/start differs from trace")
+        else:
+            pass
         if type(completed) in (int, float) and math.isfinite(completed):
             completions[index] = completed
+        else:
+            pass
     check_completions(completions, append_times, deadlines, reasons)
     return sha_file(path), completions
 
@@ -182,6 +214,8 @@ def check_sent_records(
                 reasons.append(
                     f"append sent record without matching append: {event_id!r}"
                 )
+            else:
+                pass
         elif kind != APPEND:
             reasons.append(f"append {index} sent record type mismatch")
         else:
@@ -189,6 +223,8 @@ def check_sent_records(
     for index, recorded in enumerate(times):
         if len(recorded) > 1:
             reasons.append(f"append {index} has duplicate send completion records")
+        else:
+            pass
     return [recorded[0] if recorded else None for recorded in times]
 
 
@@ -198,6 +234,8 @@ def lateness(
     """(count after T, max positive lateness s) of recorded times; None if any is unknown."""
     if end is None or times is None or any(t is None for t in times):
         return None, None
+    else:
+        pass
     late = [t - end for t in times if t > end]
     return len(late), max(late, default=0.0)
 
@@ -209,7 +247,7 @@ def analyze_variant(
     receipts_required: bool = False,
 ) -> tuple[dict[str, JsonValue], bytes | None, NDArray[np.int16] | None]:
     """Stream one trace; return (record, input_pcm or None, output int16 at 16 kHz or None)."""
-    reasons, post, anomalies = [], [], []
+    reasons, post_window_events, anomalies = [], [], []
     pcm_path, trace_path = variant_dir / "input.pcm", variant_dir / "continuous.jsonl"
     if not pcm_path.is_file() or not trace_path.is_file():
         return (
@@ -224,18 +262,24 @@ def analyze_variant(
             None,
             None,
         )
+    else:
+        pass
     pcm = pcm_path.read_bytes()
     samples = np.frombuffer(pcm, "<i2") if len(pcm) % 2 == 0 else np.zeros(0, "<i2")
     if not len(samples):
         reasons.append("input.pcm empty or odd length")
+    else:
+        pass
     input_sha = sha_bytes(pcm)
     if input_sha != expected_input_sha:
         reasons.append("input.pcm sha256 differs from run.json input.sha256")
-    n = len(samples)
-    window_s = n / RATE
+    else:
+        pass
+    sample_count = len(samples)
+    window_s = sample_count / RATE
     packet = PACKET_SAMPLES
-    expected_appends = -(-n // packet)
-    t0 = end = None
+    expected_appends = -(-sample_count // packet)
+    first_append_s = window_end_s = None
     out_rate = None
     appends, deviations, append_ids, append_times, sent_records = 0, [], [], [], []
     last_time = None
@@ -248,19 +292,19 @@ def analyze_variant(
     }
     first_audio_s = last_audio_s = None
     live_after_t = False
-    marks, created, done = [], set(), {}
-    closed, closed_times = 0, []
-    receipts = {}
+    lifecycle_events, created_responses, response_terminals = [], set(), {}
+    closed_count, close_times_s = 0, []
+    accepted_receipts = {}
 
     def at(time_s: float) -> float | None:
-        return None if t0 is None else time_s - t0
+        return None if first_append_s is None else time_s - first_append_s
 
     def problem(message: str, time_s: float) -> None:
         """Window-invalidating if at/before T (or before t0), else a post-window diagnostic."""
-        if end is None or time_s <= end:
+        if window_end_s is None or time_s <= window_end_s:
             reasons.append(message)
         else:
-            post.append({"elapsed_s": at(time_s), "message": message})
+            post_window_events.append({"elapsed_s": at(time_s), "message": message})
 
     with trace_path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
@@ -282,12 +326,18 @@ def analyze_variant(
                     f"trace line {line_number} has malformed clock {time_s!r}"
                 )
                 continue
+            else:
+                pass
             if last_time is not None and time_s < last_time:
                 reasons.append(f"trace clock not monotonic at line {line_number}")
+            else:
+                pass
             last_time = time_s if last_time is None else max(last_time, time_s)
             if direction == "send" and kind == "input_audio_buffer.append":
-                if t0 is None:
-                    t0, end = time_s, time_s + window_s
+                if first_append_s is None:
+                    first_append_s, window_end_s = time_s, time_s + window_s
+                else:
+                    pass
                 index = appends
                 appends += 1
                 append_ids.append(event.get("event_id"))
@@ -295,6 +345,8 @@ def analyze_variant(
                 if index >= expected_appends:
                     reasons.append(f"extra input append {index}")
                     continue
+                else:
+                    pass
                 try:
                     start, error = append_payload(
                         record,
@@ -306,25 +358,41 @@ def analyze_variant(
                     start, error = None, str(exc)
                 if error:
                     reasons.append(f"append {index} (line {line_number}): {error}")
+                else:
+                    pass
                 if start is not None:
                     deviations.append(abs(at(time_s) - start))
+                else:
+                    pass
                 continue
+            else:
+                pass
             if direction == "sent":
                 sent_records.append((event.get("event_id"), kind, time_s))
                 continue
+            else:
+                pass
             if direction == "send":
-                if t0 is not None:
-                    receipts.setdefault(f"sent:{kind}", at(time_s))
+                if first_append_s is not None:
+                    accepted_receipts.setdefault(f"sent:{kind}", at(time_s))
+                else:
+                    pass
                 continue
+            else:
+                pass
             if direction == "mark":
-                marks.append({"elapsed_s": at(time_s), **event})
+                lifecycle_events.append({"elapsed_s": at(time_s), **event})
                 if event.get("receiver_alive") is not True:
                     reasons.append("window mark reports receiver not alive")
-                if end is None or time_s < end:
+                else:
+                    pass
+                if window_end_s is None or time_s < window_end_s:
                     reasons.append("window mark before window end")
                 else:
                     live_after_t = True
                 continue
+            else:
+                pass
             if direction in ("error", "diagnostic"):
                 message = f"client {direction}: {event.get('message')}"
                 if direction == "error":
@@ -332,10 +400,16 @@ def analyze_variant(
                 else:
                     anomalies.append({"elapsed_s": at(time_s), "message": message})
                 continue
+            else:
+                pass
             if direction != "receive":
                 continue
-            if end is not None and time_s > end:
+            else:
+                pass
+            if window_end_s is not None and time_s > window_end_s:
                 live_after_t = True
+            else:
+                pass
             if kind == "session.updated" and engine == "sglang":
                 fmt = (
                     ((event.get("session") or {}).get("audio") or {})
@@ -344,101 +418,147 @@ def analyze_variant(
                 )
                 out_rate = fmt.get("rate") if fmt.get("type") == "audio/pcm" else None
             elif kind == "session.closed":
-                closed += 1
-                closed_times.append(at(time_s))
-                if end is None or time_s <= end:
+                closed_count += 1
+                close_times_s.append(at(time_s))
+                if window_end_s is None or time_s <= window_end_s:
                     reasons.append("session.closed at or before window end")
+                else:
+                    pass
             elif kind == "error":
                 problem(f"native server error: {event.get('error', event)}", time_s)
             elif kind == "response.created":
-                created.add(response_id(event))
+                created_responses.add(response_id(event))
             elif kind == "response.done":
-                done[response_id(event)] = (event.get("response") or {}).get("status")
+                response_terminals[response_id(event)] = (
+                    event.get("response") or {}
+                ).get("status")
             elif kind in (
                 "input_audio_buffer.committed",
                 "sglang.input_audio.drained",
                 "sglang.input_audio.ended",
             ):
-                receipts.setdefault(kind, at(time_s))
+                accepted_receipts.setdefault(kind, at(time_s))
             elif kind == "response.output_audio.delta":
                 try:
-                    if t0 is None:
+                    if first_append_s is None:
                         raise ValueError("audio before first input append")
+                    else:
+                        pass
                     rate = (
                         out_rate if engine == "sglang" else event.get("sample_rate_hz")
                     )
                     if engine == "vllm" and event.get("format") != "pcm16":
                         raise ValueError("audio delta is not pcm16")
+                    else:
+                        pass
                     if type(rate) is not int or rate <= 0:
                         raise ValueError("audio output rate undeclared")
+                    else:
+                        pass
                     if playout is not None and rate != out_rate:
                         raise ValueError("audio output rate changed")
+                    else:
+                        pass
                     data = decode_b64(event.get("delta"))
                     if not data or len(data) % 2:
                         raise ValueError("empty or truncated PCM16 audio delta")
+                    else:
+                        pass
                 except ValueError as exc:
                     problem(f"trace line {line_number}: {exc}", time_s)
                     continue
-                if time_s > end:
+                if time_s > window_end_s:
                     chunks["after_window"] += 1
                     chunks["after_window_samples"] += len(data) // 2
                     continue
+                else:
+                    pass
                 if playout is None:
                     out_rate = rate
-                    playout = np.zeros(math.ceil(n * rate / RATE), "<i2")
+                    playout = np.zeros(math.ceil(sample_count * rate / RATE), "<i2")
                     cursor = 0
+                else:
+                    pass
                 pcm16 = np.frombuffer(data, "<i2")
                 start = max(cursor, round(at(time_s) * rate))
                 stop = min(start + len(pcm16), len(playout))
                 if stop > start:
                     playout[start:stop] = pcm16[: stop - start]
+                else:
+                    pass
                 cursor = start + len(pcm16)
                 chunks["in_window"] += 1
                 chunks["in_window_samples"] += len(pcm16)
                 first_audio_s = start / rate if first_audio_s is None else first_audio_s
                 last_audio_s = at(time_s)
+            else:
+                pass
 
-    if t0 is None:
+    if first_append_s is None:
         reasons.append("no input append sent")
     elif appends < expected_appends:
         reasons.append(f"incomplete append population: {appends}/{expected_appends}")
+    else:
+        pass
     for index, event_id in enumerate(append_ids):
         if not isinstance(event_id, str) or not event_id:
             reasons.append(f"append {index} event_id missing or not a non-empty string")
+        else:
+            pass
     valid_ids = [
         event_id for event_id in append_ids if isinstance(event_id, str) and event_id
     ]
     if len(set(valid_ids)) != len(valid_ids):
         reasons.append("append event_ids are not unique")
+    else:
+        pass
     deadlines = (
-        [deadline(t0, i, window_s) for i in range(appends)] if t0 is not None else []
+        [deadline(first_append_s, i, window_s) for i in range(appends)]
+        if first_append_s is not None
+        else []
     )
     receipts_path, receipts_sha, completions = variant_dir / SEND_RECEIPTS, None, None
     if engine == "sglang" and (receipts_required or receipts_path.is_file()):
         receipts_sha, completions = check_send_receipts(
             receipts_path, append_ids, append_times, deadlines, reasons
         )
-    sent_format = bool(sent_records or marks)
+    else:
+        pass
+    sent_format = bool(sent_records or lifecycle_events)
     legacy = not sent_format and receipts_sha is None and not receipts_required
     if sent_format:
-        if engine == "vllm" and not marks:
+        if engine == "vllm" and not lifecycle_events:
             reasons.append("window mark missing from new-format trace")
+        else:
+            pass
         sent = check_sent_records(sent_records, append_ids, reasons)
         check_completions(sent, append_times, deadlines, reasons)
         completions = sent if completions is None else completions
+    else:
+        pass
     if legacy:
         for index, time_s in enumerate(append_times):
-            if time_s > end:
+            if time_s > window_end_s:
                 reasons.append(f"append {index} sent after window end")
-    starts_after, start_late = lateness(append_times, end)
-    completions_after, completion_late = lateness(None if legacy else completions, end)
+            else:
+                pass
+    else:
+        pass
+    starts_after, start_late = lateness(append_times, window_end_s)
+    completions_after, completion_late = lateness(
+        None if legacy else completions, window_end_s
+    )
     max_dev = max(deviations, default=None)
     if max_dev is None or max_dev > PACING_TOLERANCE_S:
         reasons.append(
             f"input pacing deviation {max_dev} exceeds {PACING_TOLERANCE_S}s"
         )
-    if t0 is not None and not live_after_t:
+    else:
+        pass
+    if first_append_s is not None and not live_after_t:
         reasons.append("receiver liveness after window end unproven")
+    else:
+        pass
     valid = not reasons
     output = None
     record = {
@@ -453,7 +573,7 @@ def analyze_variant(
                 else {}
             ),
         },
-        "input": {"samples": n, "sample_rate": RATE, "duration_s": window_s},
+        "input": {"samples": sample_count, "sample_rate": RATE, "duration_s": window_s},
         "window": {
             "t0": "send start of first input_audio_buffer.append",
             "T_s": window_s,
@@ -499,15 +619,17 @@ def analyze_variant(
             "pacing_tolerance_s": PACING_TOLERANCE_S,
         },
         "lifecycle": {
-            "session_closed_count": closed,
-            "session_closed_elapsed_s": closed_times,
-            "responses_created": len(created),
-            "responses_terminal": len(done),
-            "responses_missing_terminal": sorted(str(r) for r in created - done.keys()),
-            "terminal_statuses": sorted({str(s) for s in done.values()}),
-            "receipts_elapsed_s": receipts,
-            "window_marks": marks,
-            "post_window_errors": post,
+            "session_closed_count": closed_count,
+            "session_closed_elapsed_s": close_times_s,
+            "responses_created": len(created_responses),
+            "responses_terminal": len(response_terminals),
+            "responses_missing_terminal": sorted(
+                str(r) for r in created_responses - response_terminals.keys()
+            ),
+            "terminal_statuses": sorted({str(s) for s in response_terminals.values()}),
+            "receipts_elapsed_s": accepted_receipts,
+            "window_marks": lifecycle_events,
+            "post_window_errors": post_window_events,
             "protocol_anomalies": anomalies,
             "all_input_processed_receipt": None,
             "natural_completion": None,
@@ -517,17 +639,19 @@ def analyze_variant(
         native = playout if playout is not None else np.zeros(0, "<i2")
         rate = out_rate if playout is not None else RATE
         if playout is None:
-            out = np.zeros(n, "<i2")
+            out = np.zeros(sample_count, "<i2")
             clipped = 0
         elif rate == RATE:
-            out = native[:n].copy()
+            out = native[:sample_count].copy()
             clipped = 0
         else:
             g = math.gcd(RATE, rate)
             resampled = resample_poly(native.astype(np.float64), RATE // g, rate // g)
-            if len(resampled) < n:
+            if len(resampled) < sample_count:
                 raise AssertionError("resampled timeline shorter than input")
-            scaled = np.round(resampled[:n])
+            else:
+                pass
+            scaled = np.round(resampled[:sample_count])
             clipped = int(np.count_nonzero((scaled < -32768) | (scaled > 32767)))
             out = np.clip(scaled, -32768, 32767).astype("<i2")
         crop_at = window_s * rate
@@ -567,6 +691,8 @@ def analyze_variant(
             "speech_at_boundary": "decided later by VAD on output.wav",
         }
         output = out
+    else:
+        pass
     return record, (pcm if input_sha == expected_input_sha else None), output
 
 
@@ -584,6 +710,8 @@ def load_runs(runs: list[Path], engine: str) -> tuple[
         is_vllm = str(manifest.get("validation_scope", "")).startswith("vllm-native")
         if is_vllm != (engine == "vllm"):
             raise ValueError(f"{run} is not a {engine} run")
+        else:
+            pass
         sources.append(
             {
                 "run": str(run),
@@ -602,7 +730,11 @@ def load_runs(runs: list[Path], engine: str) -> tuple[
                     v["status"] in INCOMPLETE for v in previous[1]["variants"].values()
                 ):
                     raise ValueError(f"{entry['id']} captured completely in two runs")
+                else:
+                    pass
                 superseded.append({"id": entry["id"], "run": str(previous[0])})
+            else:
+                pass
             chosen[entry["id"]] = (run, entry)
     return chosen, sources, superseded
 
@@ -621,8 +753,12 @@ def diagnostics(
         native = json.loads((directory / "native-lifecycle.json").read_text())
         native.pop("capabilities", None)
         kept["native_lifecycle"] = native
+    else:
+        pass
     if engine == "sglang" and (directory / "report.json").is_file():
         kept["report_sha256"] = sha_file(directory / "report.json")
+    else:
+        pass
     return kept
 
 

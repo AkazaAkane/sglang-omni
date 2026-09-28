@@ -20,17 +20,21 @@ from benchmarks.duplex.reference_timing import run_timing
 def parse_pairs(values: list[str], flag: str) -> dict[str, Path]:
     pairs = {}
     for value in values or []:
-        name, sep, path = value.partition("=")
-        if not sep or name in pairs:
+        name, separator, path = value.partition("=")
+        if not separator or name in pairs:
             raise SystemExit(f"{flag} expects unique NAME=PATH, got {value!r}")
+        else:
+            pass
         pairs[name] = Path(path)
     return pairs
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    sub = parser.add_subparsers(dest="phase", required=True)
-    export = sub.add_parser("export", help="Build fixed-window audio from saved runs")
+    commands = parser.add_subparsers(dest="phase", required=True)
+    export = commands.add_parser(
+        "export", help="Build fixed-window audio from saved runs"
+    )
     export.add_argument("--engine", choices=("sglang", "vllm"), required=True)
     export.add_argument("--run", type=Path, action="append", required=True)
     export.add_argument("--out", type=Path, required=True)
@@ -61,27 +65,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     common.add_argument("--retry-failed", action="store_true")
 
-    asr = sub.add_parser("asr", parents=[common])
+    asr = commands.add_parser("asr", parents=[common])
     asr.add_argument("--nemo", required=True, help="local parakeet-tdt-0.6b-v2.nemo")
     asr.add_argument("--nemo-sha256")
     asr.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
-    timing = sub.add_parser("timing", parents=[common])
+    timing = commands.add_parser("timing", parents=[common])
     timing.add_argument(
         "--audio-loader", choices=("auto", "official", "soundfile"), default="auto"
     )
-    sub.add_parser("prepare-judge", parents=[common])
-    judge = sub.add_parser("judge", parents=[common])
+    commands.add_parser("prepare-judge", parents=[common])
+    judge = commands.add_parser("judge", parents=[common])
     judge.add_argument("--judge", required=True)
     judge.add_argument("--api-key-env", default="OPENAI_API_KEY")
     judge.add_argument("--base-url", help="Configured OpenAI-compatible endpoint")
     judge.add_argument("--timeout-s", type=float, default=120.0)
     judge.add_argument("--retry-sleep-s", type=float, default=5.0)
     judge.add_argument("--max-requests", type=int, default=None)
-    summarize = sub.add_parser("summarize", parents=[common])
+    summarize = commands.add_parser("summarize", parents=[common])
     summarize.add_argument("--bootstrap", type=int, default=2000)
     summarize.add_argument("--seed", type=int, default=20260925)
     for phase in ("custom-judge", "custom-summarize"):
-        custom = sub.add_parser(phase, parents=[common])
+        custom = commands.add_parser(phase, parents=[common])
         custom.add_argument("--source-scores", type=Path, required=True)
         custom.add_argument("--judge-config", type=Path, required=True)
         if phase == "custom-judge":
@@ -89,6 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
             custom.add_argument("--api-key-env", default="CUSTOM_JUDGE_API_KEY")
             custom.add_argument("--timeout-s", type=float, default=120.0)
             custom.add_argument("--retry-sleep-s", type=float, default=5.0)
+        else:
+            pass
     return parser
 
 
@@ -97,16 +103,22 @@ def open_engines(args: argparse.Namespace) -> list[Engine]:
     manifests = parse_pairs(args.manifest, "--manifest")
     if set(manifests) - set(trees):
         raise SystemExit("--manifest names an unknown engine")
+    else:
+        pass
     if args.phase in ("custom-judge", "custom-summarize"):
         scores = args.source_scores
         for name in trees:
-            for fname in (
+            for filename in (
                 "manifest-receipt.json",
                 "source-manifest.json",
                 "projected-manifest.json",
             ):
-                if not (scores / "engines" / name / fname).is_file():
-                    raise SystemExit(f"--source-scores lacks existing {name}/{fname}")
+                if not (scores / "engines" / name / filename).is_file():
+                    raise SystemExit(
+                        f"--source-scores lacks existing {name}/{filename}"
+                    )
+                else:
+                    pass
     else:
         scores = args.out
     return [
@@ -130,13 +142,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(result["counts"], sort_keys=True))
         return 0
+    else:
+        pass
     for name in ("limit", "max_requests", "bootstrap"):
         value = vars(args).get(name)
         if value is not None and value <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
+        else:
+            pass
     for tree in parse_pairs(args.tree, "--tree").values():
         if args.out.resolve().is_relative_to(tree.resolve()):
             parser.error("--out must be outside every source audio tree")
+        else:
+            pass
     if args.phase in ("custom-judge", "custom-summarize"):
         sources = [args.source_scores, *parse_pairs(args.tree, "--tree").values()]
         for source in sources:
@@ -146,12 +164,18 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error(
                     "custom --out must be independent of --source-scores and audio trees"
                 )
+            else:
+                pass
         if args.phase == "custom-judge" and (
             not args.base_url.startswith(("http://", "https://"))
             or args.timeout_s <= 0
             or args.retry_sleep_s < 0
         ):
             parser.error("custom judge requires an HTTP(S) endpoint and valid timeouts")
+        else:
+            pass
+    else:
+        pass
     paths = verify_reference(args.reference_source)
     args.out.mkdir(parents=True, exist_ok=True)
     engines = open_engines(args)
@@ -193,3 +217,5 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+else:
+    pass

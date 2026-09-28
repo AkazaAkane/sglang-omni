@@ -18,7 +18,10 @@ from collections import Counter
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TypedDict
+
+from pydantic import JsonValue
+from typing_extensions import NotRequired
 
 REFERENCE_REVISION = "3e799c45a045256f47d5f1c9cda90157e2d2ec9e"
 REFERENCE_FILES = {
@@ -72,36 +75,36 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def canonical_hash(value: Any) -> str:
+def canonical_hash(value: JsonValue) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
 
 
 def sha256_file(path: Path) -> str:
-    with open(path, "rb") as fp:
-        return hashlib.file_digest(fp, "sha256").hexdigest()
+    with open(path, "rb") as file_handle:
+        return hashlib.file_digest(file_handle, "sha256").hexdigest()
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with open(tmp, "wb") as fp:
-        fp.write(data)
-        fp.flush()
-        os.fsync(fp.fileno())
-    os.replace(tmp, path)
+    temporary_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with open(temporary_path, "wb") as file_handle:
+        file_handle.write(data)
+        file_handle.flush()
+        os.fsync(file_handle.fileno())
+    os.replace(temporary_path, path)
 
 
-def atomic_write_json(path: Path, value: Any) -> None:
+def atomic_write_json(path: Path, value: JsonValue) -> None:
     atomic_write_bytes(
         path, (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
     )
 
 
-def read_json(path: Path) -> Any:
-    with open(path, encoding="utf-8") as fp:
-        return json.load(fp)
+def read_json(path: Path) -> JsonValue:
+    with open(path, encoding="utf-8") as file_handle:
+        return json.load(file_handle)
 
 
 def package_versions() -> dict[str, str | None]:
@@ -114,10 +117,12 @@ def package_versions() -> dict[str, str | None]:
     return versions
 
 
-def finite(*values: Any) -> bool:
+def finite(*values: JsonValue) -> bool:
     return all(
-        isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
-        for v in values
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        for value in values
     )
 
 
@@ -125,29 +130,43 @@ class HashCache:
     """sha256 by (resolved path, size, mtime_ns); trees are immutable after export."""
 
     def __init__(self, path: Path) -> None:
-        self.path = path
-        self.data = read_json(path) if path.exists() else {}
-        self.dirty = False
+        self.path: Path = path
+        self.data: dict[str, str] = read_json(path) if path.exists() else {}
+        self.dirty: bool = False
 
     def get(self, path: Path) -> str:
-        real = path.resolve()
-        st = real.stat()
-        key = f"{real}|{st.st_size}|{st.st_mtime_ns}"
+        resolved_path = path.resolve()
+        file_stat = resolved_path.stat()
+        key = f"{resolved_path}|{file_stat.st_size}|{file_stat.st_mtime_ns}"
         if key not in self.data:
-            self.data[key] = sha256_file(real)
+            self.data[key] = sha256_file(resolved_path)
             self.dirty = True
+        else:
+            pass
         return self.data[key]
 
     def save(self) -> None:
         if self.dirty:
             atomic_write_json(self.path, self.data)
-            self.dirty = False
+            self.dirty: bool = False
+        else:
+            pass
+
+
+class ProgressState(TypedDict):
+    phase: str
+    pid: int
+    started_at: str
+    total_units: int
+    counts: Counter[str]
+    finished: bool
+    updated_at: NotRequired[str]
 
 
 class Progress:
     def __init__(self, out: Path, phase: str, total: int) -> None:
-        self.path = out / "progress" / f"{phase}.json"
-        self.state = {
+        self.path: Path = out / "progress" / f"{phase}.json"
+        self.state: ProgressState = {
             "phase": phase,
             "pid": os.getpid(),
             "started_at": utc_now(),
@@ -170,49 +189,69 @@ class Progress:
 
 
 def load_module(path: Path, name: str) -> types.ModuleType:
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module_spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
     return module
 
 
-def load_manifest(path: Path, projection: Path | None) -> dict:
+def load_manifest(path: Path, projection: Path | None) -> dict[str, JsonValue]:
     """Load reference-manifest.json into the canonical form, optionally via project(doc)."""
-    doc = read_json(path)
+    manifest = read_json(path)
     if projection is not None:
-        doc = load_module(projection, "fdb_manifest_projection").project(doc)
-    samples = doc.get("samples")
+        manifest = load_module(projection, "fdb_manifest_projection").project(manifest)
+    else:
+        pass
+    samples = manifest.get("samples")
     if not isinstance(samples, list) or not samples:
         raise ValueError(f"{path}: 'samples' must be a non-empty list")
+    else:
+        pass
     seen = set()
     for sample in samples:
-        sid = sample.get("sample_id")
+        sample_id = sample.get("sample_id")
         if (
-            not isinstance(sid, str)
-            or sid.count("/") != 1
-            or any(part in ("", ".", "..") for part in sid.split("/"))
-            or sid in seen
-            or ".." in sid
+            not isinstance(sample_id, str)
+            or sample_id.count("/") != 1
+            or any(part in ("", ".", "..") for part in sample_id.split("/"))
+            or sample_id in seen
+            or ".." in sample_id
         ):
-            raise ValueError(f"{path}: invalid or duplicate sample_id {sid!r}")
-        seen.add(sid)
-        category = sid.split("/")[0]
+            raise ValueError(f"{path}: invalid or duplicate sample_id {sample_id!r}")
+        else:
+            pass
+        seen.add(sample_id)
+        category = sample_id.split("/")[0]
         if sample.setdefault("category", category) != category:
-            raise ValueError(f"{sid}: category disagrees with sample_id")
+            raise ValueError(f"{sample_id}: category disagrees with sample_id")
+        else:
+            pass
         variants = sample.get("variants")
         if not isinstance(variants, dict) or set(variants) != set(VARIANTS):
-            raise ValueError(f"{sid}: variants must be exactly {sorted(VARIANTS)}")
+            raise ValueError(
+                f"{sample_id}: variants must be exactly {sorted(VARIANTS)}"
+            )
+        else:
+            pass
         for name, variant in variants.items():
             if not isinstance(variant.get("eligible"), bool):
-                raise ValueError(f"{sid}/{name}: 'eligible' must be a bool")
+                raise ValueError(f"{sample_id}/{name}: 'eligible' must be a bool")
+            else:
+                pass
             if not variant["eligible"] and not variant.get("reasons"):
-                raise ValueError(f"{sid}/{name}: ineligible variant needs reasons")
+                raise ValueError(
+                    f"{sample_id}/{name}: ineligible variant needs reasons"
+                )
+            else:
+                pass
         span = sample.get("event_span_s")
         if span is not None and not (
             len(span) == 2 and finite(*span) and span[0] < span[1]
         ):
-            raise ValueError(f"{sid}: invalid event_span_s {span}")
-    return doc
+            raise ValueError(f"{sample_id}: invalid event_span_s {span}")
+        else:
+            pass
+    return manifest
 
 
 class Engine:
@@ -226,8 +265,11 @@ class Engine:
     ) -> None:
         if not name.replace("-", "").replace("_", "").isalnum():
             raise SystemExit(f"invalid engine name {name!r}")
-        self.name, self.tree = name, tree.resolve()
-        self.root = out / "engines" / name
+        else:
+            pass
+        self.name: str = name
+        self.tree: Path = tree.resolve()
+        self.root: Path = out / "engines" / name
         source_bytes = manifest_path.read_bytes()
         manifest_sha = hashlib.sha256(source_bytes).hexdigest()
         receipt_path = self.root / "manifest-receipt.json"
@@ -240,15 +282,19 @@ class Engine:
         receipt = read_json(receipt_path) if receipt_path.exists() else None
 
         def check(keys: list[str]) -> None:
-            changed = [k for k in keys if receipt.get(k) != frozen[k]]
+            changed = [key for key in keys if receipt.get(key) != frozen[key]]
             if changed:
                 raise SystemExit(
                     f"{name}: {', '.join(changed)} changed since first phase; use a new --out"
                 )
+            else:
+                pass
 
         if receipt is not None:
             check(list(frozen))
-        self.manifest = load_manifest(manifest_path, projection)
+        else:
+            pass
+        self.manifest: dict[str, JsonValue] = load_manifest(manifest_path, projection)
         frozen["projected_manifest_sha256"] = canonical_hash(self.manifest)
         if receipt is not None:
             check(["projected_manifest_sha256"])
@@ -265,7 +311,9 @@ class Engine:
                     "created_at": utc_now(),
                 },
             )
-        self.samples = {s["sample_id"]: s for s in self.manifest["samples"]}
+        self.samples: dict[str, dict[str, JsonValue]] = {
+            sample["sample_id"]: sample for sample in self.manifest["samples"]
+        }
 
     def sample_dir(self, sid: str) -> Path:
         return self.root / "samples" / sid
@@ -279,7 +327,11 @@ class Engine:
         if dst.is_symlink() or dst.exists():
             if dst.resolve() != src.resolve():
                 raise SystemExit(f"{dst} points to {dst.resolve()}, expected {src}")
+            else:
+                pass
             return
+        else:
+            pass
         os.symlink(src.resolve(), dst)
 
     def eligible(self, sid: str, variant: str) -> bool:
@@ -287,16 +339,22 @@ class Engine:
 
 
 def selected(engine: Engine, only: list[str]) -> list[str]:
-    sids = sorted(engine.samples)
+    sample_ids = sorted(engine.samples)
     if only:
-        unknown = set(only) - set(sids)
+        unknown = set(only) - set(sample_ids)
         if unknown:
             raise SystemExit(f"{engine.name}: unknown --only {sorted(unknown)}")
-        sids = [s for s in sids if s in only]
-    return sids
+        else:
+            pass
+        sample_ids = [sample_id for sample_id in sample_ids if sample_id in only]
+    else:
+        pass
+    return sample_ids
 
 
-def record_identity(out: Path, phase: str, extra: dict) -> dict:
+def record_identity(
+    out: Path, phase: str, extra: dict[str, JsonValue]
+) -> dict[str, JsonValue]:
     identity = {
         "phase": phase,
         "recorded_at": utc_now(),
@@ -310,12 +368,13 @@ def record_identity(out: Path, phase: str, extra: dict) -> dict:
         },
         "reference_revision": REFERENCE_REVISION,
         "reference_files": {
-            k: {"path": v[0], "sha256": v[1]} for k, v in REFERENCE_FILES.items()
+            key: {"path": value[0], "sha256": value[1]}
+            for key, value in REFERENCE_FILES.items()
         },
         **extra,
     }
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    atomic_write_json(out / "identity" / f"{phase}-{stamp}.json", identity)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    atomic_write_json(out / "identity" / f"{phase}-{timestamp}.json", identity)
     return identity
 
 
@@ -324,7 +383,10 @@ def phase_log(out: Path, phase: str) -> Iterator[None]:
     """Official scripts print per file; keep that output with the run, not on the console."""
     path = out / "logs" / f"{phase}.log"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as fp, contextlib.redirect_stdout(fp):
+    with (
+        open(path, "a", encoding="utf-8") as file_handle,
+        contextlib.redirect_stdout(file_handle),
+    ):
         print(f"=== {phase} {utc_now()} pid={os.getpid()}")
         yield
 

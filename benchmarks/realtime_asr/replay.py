@@ -10,9 +10,9 @@ import platform
 import subprocess
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 from benchmarks.realtime_asr.client import SessionTrace
 from benchmarks.realtime_asr.metrics import check_invariants, latency_metrics
@@ -25,13 +25,13 @@ class TraceArtifact(BaseModel):
 
     schema_version: Literal[1]
     sample_id: str
-    config: dict[str, Any]
-    source: dict[str, Any]
+    config: dict[str, JsonValue]
+    source: dict[str, JsonValue]
     input_pcm_sha256: str
     trace: SessionTrace
 
 
-def source_fingerprint() -> dict[str, Any]:
+def source_fingerprint() -> dict[str, JsonValue]:
     """Identify the actual recorder and grader files, including uncommitted edits."""
     root = Path(__file__).resolve().parents[2]
     paths = (
@@ -65,16 +65,16 @@ def source_fingerprint() -> dict[str, Any]:
 
 
 def save_trace(path: Path, artifact: TraceArtifact) -> None:
-    with path.open("x", encoding="utf-8") as handle:
-        handle.write(artifact.model_dump_json(indent=2))
-        handle.write("\n")
+    with path.open("x", encoding="utf-8") as artifact_file:
+        artifact_file.write(artifact.model_dump_json(indent=2))
+        artifact_file.write("\n")
 
 
 def load_trace(path: Path) -> TraceArtifact:
     return TraceArtifact.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def replay_trace(artifact: TraceArtifact) -> dict[str, Any]:
+def replay_trace(artifact: TraceArtifact) -> dict[str, JsonValue]:
     """Recompute the verdict and client timing without a server, model, or WER."""
     violations = check_invariants(artifact.trace)
     return {
@@ -101,3 +101,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+else:
+    pass
