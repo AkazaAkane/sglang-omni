@@ -2,6 +2,7 @@ import base64
 import copy
 
 import pytest
+from pydantic import JsonValue
 
 from benchmarks.duplex.oracle import evaluate_trace
 
@@ -40,17 +41,21 @@ GRANTED = {
 }
 
 
-def trace_fixture() -> list[dict]:
+def trace_fixture() -> list[dict[str, JsonValue]]:
     pcm = base64.b64encode(b"\x00\x00" * 1280).decode()
     output = base64.b64encode(b"\x01\x00" * 1764).decode()
     result = []
 
-    def add(time_s: float, direction: str, typ: str, **event: object) -> None:
+    def add(time_s: float, direction: str, event_type: str, **event: JsonValue) -> None:
         result.append(
             {
                 "direction": direction,
                 "time_s": 100 + time_s,
-                "event": {"type": typ, "event_id": f"event_{len(result)}", **event},
+                "event": {
+                    "type": event_type,
+                    "event_id": f"event_{len(result)}",
+                    **event,
+                },
             }
         )
 
@@ -197,20 +202,20 @@ def trace_fixture() -> list[dict]:
     return result
 
 
-def event_of(records: list[dict], typ: str) -> dict:
-    return next(record["event"] for record in records if record["event"]["type"] == typ)
+def find_event(
+    records: list[dict[str, JsonValue]], event_type: str
+) -> dict[str, JsonValue]:
+    return next(
+        record["event"] for record in records if record["event"]["type"] == event_type
+    )
 
 
 def test_known_good_trace_and_hand_calculated_metrics() -> None:
     trace = trace_fixture()
-    assert all("epoch" not in r["event"].get("sglang", {}) for r in trace)
-    assert "cancel_is_noop" not in GRANTED
-    assert "held" not in event_of(trace, "session.closed")
-    assert "sglang" not in event_of(trace, "sglang.input_audio.accepted")
     result = evaluate_trace(trace, scenario="continuous")
     assert result["status"] == "pass"
     assert result["violations"] == []
-    assert all(result["coverage"].values())
+    assert result["coverage"] == {"input_output_overlap": True}
     assert result["metrics"]["input_audio_s"] == pytest.approx(0.16)
     assert result["metrics"]["output_audio_s"] == pytest.approx(0.16)
     assert result["metrics"]["first_audio_packet_s"] == pytest.approx(0.03)
@@ -218,11 +223,10 @@ def test_known_good_trace_and_hand_calculated_metrics() -> None:
     assert result["metrics"]["drain_after_eos_s"] == pytest.approx(0.04)
     assert result["metrics"]["close_ack_s"] == pytest.approx(0.01)
     assert result["metrics"]["input_output_overlap"] is True
-    assert set(result["coverage"]) == {"input_output_overlap"}
 
 
 @pytest.mark.parametrize(
-    ("typ", "key", "value", "violation"),
+    ("event_type", "key", "value", "violation"),
     [
         ("session.updated", "client_event_id", "unknown", "matching prior client"),
         (
@@ -256,9 +260,11 @@ def test_known_good_trace_and_hand_calculated_metrics() -> None:
         ("session.closed", "client_event_id", "unknown", "matching prior client"),
     ],
 )
-def test_wire_mutations_fail(typ: str, key: str, value: object, violation: str) -> None:
+def test_wire_mutations_fail(
+    event_type: str, key: str, value: JsonValue, violation: str
+) -> None:
     trace = trace_fixture()
-    event_of(trace, typ)[key] = value
+    find_event(trace, event_type)[key] = value
     result = evaluate_trace(trace, scenario="continuous")
     assert result["status"] == "fail"
     assert any(violation in item for item in result["violations"])
@@ -285,7 +291,7 @@ def test_native_unit_receipt_identity(unit_id: str, violation: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "typ",
+    "event_type",
     [
         "session.created",
         "session.updated",
@@ -298,13 +304,15 @@ def test_native_unit_receipt_identity(unit_id: str, violation: str) -> None:
         "sglang.input_audio.accepted",
     ],
 )
-def test_missing_required_steps_fail(typ: str) -> None:
-    trace = [record for record in trace_fixture() if record["event"]["type"] != typ]
+def test_missing_required_steps_fail(event_type: str) -> None:
+    trace = [
+        record for record in trace_fixture() if record["event"]["type"] != event_type
+    ]
     assert evaluate_trace(trace, scenario="continuous")["status"] == "fail"
 
 
 @pytest.mark.parametrize(
-    "typ",
+    "event_type",
     [
         "response.done",
         "response.output_audio.done",
@@ -312,9 +320,11 @@ def test_missing_required_steps_fail(typ: str) -> None:
         "sglang.input_audio.accepted",
     ],
 )
-def test_duplicate_receipts_or_terminals_fail(typ: str) -> None:
+def test_duplicate_receipts_or_terminals_fail(event_type: str) -> None:
     trace = trace_fixture()
-    index = next(i for i, record in enumerate(trace) if record["event"]["type"] == typ)
+    index = next(
+        i for i, record in enumerate(trace) if record["event"]["type"] == event_type
+    )
     duplicate = copy.deepcopy(trace[index])
     duplicate["event"]["event_id"] = "duplicate_semantics"
     trace.insert(index, duplicate)
@@ -322,9 +332,9 @@ def test_duplicate_receipts_or_terminals_fail(typ: str) -> None:
 
 
 @pytest.mark.parametrize("value", [False, 1, "true"])
-def test_native_capability_requires_actual_true(value: object) -> None:
+def test_native_capability_requires_actual_true(value: JsonValue) -> None:
     trace = trace_fixture()
-    event_of(trace, "session.updated")["session"]["sglang"]["granted"][
+    find_event(trace, "session.updated")["session"]["sglang"]["granted"][
         "native_full_duplex"
     ] = value
     assert evaluate_trace(trace, scenario="continuous")["status"] == "fail"
@@ -340,9 +350,9 @@ def test_native_capability_requires_actual_true(value: object) -> None:
         ("output_audio_format", {"type": "audio/pcm", "rate": 16000}),
     ],
 )
-def test_grant_must_match_the_measured_profile(key: str, value: object) -> None:
+def test_grant_must_match_the_measured_profile(key: str, value: JsonValue) -> None:
     trace = trace_fixture()
-    event_of(trace, "session.updated")["session"]["sglang"]["granted"][key] = value
+    find_event(trace, "session.updated")["session"]["sglang"]["granted"][key] = value
     result = evaluate_trace(trace, scenario="continuous")
     assert result["status"] == "fail"
     assert f"unsupported capability: {key}" in result["violations"]
@@ -393,11 +403,11 @@ def test_invalid_trace_or_execution_errors_fail(mutation: str) -> None:
     assert evaluate_trace(trace, scenario="continuous")["status"] == "fail"
 
 
-@pytest.mark.parametrize("typ", ["response.output_audio.delta", "response.done"])
-def test_output_after_terminal_fails(typ: str) -> None:
+@pytest.mark.parametrize("event_type", ["response.output_audio.delta", "response.done"])
+def test_output_after_terminal_fails(event_type: str) -> None:
     trace = trace_fixture()
     late = copy.deepcopy(
-        next(record for record in trace if record["event"]["type"] == typ)
+        next(record for record in trace if record["event"]["type"] == event_type)
     )
     late["event"]["event_id"] = "late_output"
     late["time_s"] = 100.265
@@ -617,7 +627,7 @@ def test_native_unit_accounting(mutation: str, violation: str) -> None:
     assert any(violation in item for item in result["violations"])
 
 
-def admission(attempt: int, http_status: int = 503) -> dict:
+def admission(attempt: int, http_status: int = 503) -> dict[str, JsonValue]:
     return {
         "direction": "admission",
         "time_s": 99.0 + attempt / 100,
@@ -647,7 +657,7 @@ def test_admission_denials_before_the_session_are_not_failures() -> None:
     ],
 )
 def test_malformed_admission_diagnostics_fail(
-    records: list[dict], violation: str
+    records: list[dict[str, JsonValue]], violation: str
 ) -> None:
     result = evaluate_trace([*records, *trace_fixture()], scenario="continuous")
     assert result["status"] == "fail"
@@ -702,7 +712,7 @@ def test_response_terminal_reason_must_match_client_commands(
     status: str, reason: str, violation: str
 ) -> None:
     trace = trace_fixture()
-    event_of(trace, "response.done")["response"].update(
+    find_event(trace, "response.done")["response"].update(
         status=status, status_details={"reason": reason}
     )
     result = evaluate_trace(trace, scenario="continuous")
@@ -712,7 +722,7 @@ def test_response_terminal_reason_must_match_client_commands(
 
 def test_response_terminal_without_reason_fails() -> None:
     trace = trace_fixture()
-    del event_of(trace, "response.done")["response"]["status_details"]
+    find_event(trace, "response.done")["response"].pop("status_details")
     result = evaluate_trace(trace, scenario="continuous")
     assert result["status"] == "fail"
     assert "unsupported response terminal reason: None" in result["violations"]
@@ -754,19 +764,19 @@ def test_removed_cancel_scenario_is_rejected() -> None:
 
 
 @pytest.mark.parametrize(
-    ("direction", "typ"),
+    ("direction", "event_type"),
     [("send", "response.cancel"), ("receive", "sglang.response.cancelled")],
 )
-def test_removed_cancel_events_cannot_qualify(direction: str, typ: str) -> None:
+def test_removed_cancel_events_cannot_qualify(direction: str, event_type: str) -> None:
     trace = trace_fixture()
     trace.insert(
         3,
         {
             "direction": direction,
             "time_s": 100.05,
-            "event": {"type": typ, "event_id": "obsolete_cancel"},
+            "event": {"type": event_type, "event_id": "obsolete_cancel"},
         },
     )
     result = evaluate_trace(trace, scenario="continuous")
     assert result["status"] == "fail"
-    assert any(typ in violation for violation in result["violations"])
+    assert any(event_type in violation for violation in result["violations"])

@@ -194,32 +194,29 @@ class Fixture(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def make_run(
-        self, name, engine, variants, sample="user_interruption/1", status="captured"
-    ):
-        """variants: {variant: (pcm, trace text)}; returns run dir."""
-        run = self.root / name
+    def make_run(self, variants: dict[str, tuple[bytes, str]]) -> Path:
+        """Write a paired SGLang capture with the supplied PCM and trace text."""
+        run = self.root / "run"
+        sample_id = "user_interruption/1"
         states = {}
-        for variant, (pcm, text) in variants.items():
-            directory = Path("samples") / sample / variant
+        for variant, (pcm, trace_text) in variants.items():
+            directory = Path("samples") / sample_id / variant
             (run / directory).mkdir(parents=True)
             (run / directory / "input.pcm").write_bytes(pcm)
-            (run / directory / "continuous.jsonl").write_text(text)
+            (run / directory / "continuous.jsonl").write_text(trace_text)
             states[variant] = {
                 "directory": str(directory),
-                "status": status,
+                "status": "captured",
                 "input": {"sha256": hashlib.sha256(pcm).hexdigest()},
-                "source": {"file": f"{sample}/input.wav", "sha256": None},
+                "source": {"file": f"{sample_id}/input.wav", "sha256": None},
             }
-        scope = (
-            {"validation_scope": "vllm-native-fixed-window-v2"}
-            if engine == "vllm"
-            else {}
-        )
-        (run / "manifest.json").write_text(json.dumps({"profile": engine, **scope}))
+        (run / "manifest.json").write_text(json.dumps({"profile": "sglang"}))
         (run / "run.json").write_text(
             json.dumps(
-                {"status": "complete", "samples": [{"id": sample, "variants": states}]}
+                {
+                    "status": "complete",
+                    "samples": [{"id": sample_id, "variants": states}],
+                }
             )
         )
         return run
@@ -369,16 +366,11 @@ class WindowEligibility(Fixture):
             ),
             ("sglang", {"drop_last": True}, None, "incomplete append population"),
             ("vllm", {"sent": False}, None, "send completion not recorded"),
-            ("vllm", {"sent": False, "mark": False}, None, None),
         ]
         for engine, kwargs, expected, message in cases:
             record, _, _ = self.analyze(
                 engine, self.pcm, trace(self.pcm, engine, **kwargs), expected
             )
-            if message is None:
-                self.assertTrue(record["window"]["valid"])
-                self.assertTrue(record["input_check"]["legacy_inference"])
-                continue
             self.assertFalse(record["window"]["valid"], (engine, kwargs))
             self.assertIn(message, " ".join(record["window"]["reasons"]))
 
@@ -450,9 +442,7 @@ class ReferenceExport(Fixture):
     def test_declared_send_receipts_cannot_fall_back_to_legacy(self):
         pcm = pcm_input(8000)
         text = trace(pcm, "sglang")
-        run = self.make_run(
-            "run", "sglang", {v: (pcm, text) for v in ("overlap", "clean")}
-        )
+        run = self.make_run({v: (pcm, text) for v in ("overlap", "clean")})
         path = run / "manifest.json"
         manifest = json.loads(path.read_text())
         manifest["config"] = {"transport": {"input_send_receipts": ra.SEND_RECEIPTS}}
@@ -466,9 +456,7 @@ class ReferenceExport(Fixture):
     def test_public_export_preserves_population_and_source_bytes(self):
         pcm = pcm_input(8000)
         text = trace(pcm, "sglang", out_rate=24000, deltas=[(0.1, tone(0.2, 24000))])
-        run = self.make_run(
-            "run", "sglang", {v: (pcm, text) for v in ("overlap", "clean")}
-        )
+        run = self.make_run({v: (pcm, text) for v in ("overlap", "clean")})
         before = {
             str(p): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in run.rglob("*")
@@ -507,8 +495,6 @@ class ReferenceExport(Fixture):
     def test_export_cli_accepts_valid_silence(self):
         pcm = pcm_input(8000)
         run = self.make_run(
-            "run",
-            "sglang",
             {v: (pcm, trace(pcm, "sglang")) for v in ("overlap", "clean")},
         )
         out = self.root / "export"

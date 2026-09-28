@@ -71,17 +71,12 @@ def fake_nemo(monkeypatch):
     sys.modules["nemo.collections"].asr = sys.modules["nemo.collections.asr"]
 
 
-def write_wav(
-    path: Path,
-    spans: list[tuple[float, float]],
-    seconds: float = 3.0,
-    level: float = 0.3,
-):
-    x = np.zeros(int(seconds * SR), dtype=np.float32)
-    for s, e in spans:
-        x[int(s * SR) : int(e * SR)] = level
+def write_wav(path: Path, spans: list[tuple[float, float]]) -> None:
+    audio = np.zeros(3 * SR, dtype=np.float32)
+    for start_s, end_s in spans:
+        audio[int(start_s * SR) : int(end_s * SR)] = 0.3
     path.parent.mkdir(parents=True, exist_ok=True)
-    soundfile.write(path, x, SR, subtype="PCM_16")
+    soundfile.write(path, audio, SR, subtype="PCM_16")
 
 
 def variant(eligible=True, reasons=(), **extra):

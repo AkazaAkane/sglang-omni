@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import soundfile
 import websockets
+from pydantic import JsonValue
 from websockets.asyncio.server import ServerConnection
 
 from benchmarks.duplex import v15_runner
@@ -36,17 +37,26 @@ EXTRA_TEXT = {
 }
 
 
-def write_sample(root: Path, subset: str, name: str, **overrides) -> Path:
+def write_sample(
+    root: Path,
+    subset: str,
+    name: str,
+    *,
+    metadata: dict[str, JsonValue] | None = None,
+) -> Path:
     sample_dir = root / subset / name
     sample_dir.mkdir(parents=True)
     for filename in ("input.wav", "clean_input.wav"):
         soundfile.write(
             str(sample_dir / filename), FIXTURE_SAMPLES, 16000, subtype="PCM_16"
         )
-    metadata = {"context_text": "hello", **EXTRA_TEXT[subset], "timestamps": [0.1, 0.3]}
-    (sample_dir / "metadata.json").write_text(
-        json.dumps({**metadata, **overrides.get("metadata", {})})
-    )
+    metadata = {
+        "context_text": "hello",
+        **EXTRA_TEXT[subset],
+        "timestamps": [0.1, 0.3],
+        **(metadata or {}),
+    }
+    (sample_dir / "metadata.json").write_text(json.dumps(metadata))
     for filename in ("input.json", "clean_input.json"):
         (sample_dir / filename).write_text(
             json.dumps(
@@ -198,11 +208,15 @@ def test_normalization_declares_downmix_and_resampling(tmp_path: Path) -> None:
     assert np.median(samples) == pytest.approx(0.125 * 32768, abs=2)
 
 
-def write_trace(path: Path, records: list[dict], tail: str = "") -> None:
-    path.write_text("".join(json.dumps(r) + "\n" for r in records) + tail)
+def write_trace(
+    path: Path, records: list[dict[str, JsonValue]], tail: str = ""
+) -> None:
+    path.write_text("".join(json.dumps(record) + "\n" for record in records) + tail)
 
 
-def audio_delta(time_s: float, samples: int, value: int) -> dict:
+def audio_delta_record(
+    time_s: float, sample_count: int, amplitude: int
+) -> dict[str, JsonValue]:
     return {
         "direction": "receive",
         "time_s": time_s,
@@ -210,24 +224,24 @@ def audio_delta(time_s: float, samples: int, value: int) -> dict:
             "type": "response.output_audio.delta",
             "response_id": "response_0",
             "delta": base64.b64encode(
-                np.full(samples, value, "<i2").tobytes()
+                np.full(sample_count, amplitude, "<i2").tobytes()
             ).decode(),
         },
     }
 
 
-def append(time_s: float, seq: int) -> dict:
+def input_append_record(time_s: float, sequence: int) -> dict[str, JsonValue]:
     return {
         "direction": "send",
         "time_s": time_s,
         "event": {
             "type": "input_audio_buffer.append",
-            "sglang": {"seq": seq, "t_start_ms": seq * PACKET_MS},
+            "sglang": {"seq": sequence, "t_start_ms": sequence * PACKET_MS},
         },
     }
 
 
-APPEND = append(10.0, 0)
+FIRST_INPUT_APPEND = input_append_record(10.0, 0)
 # Note (wenyao): The oracle does not gate pacing, so a late append can still pass it.
 LATE_APPEND_S = 0.2
 
@@ -241,10 +255,10 @@ def test_playout_keeps_initial_delay_and_mid_stream_gap(tmp_path: Path) -> None:
                 "time_s": 9.0,
                 "event": {"type": "session.updated"},
             },
-            APPEND,
-            append(10.09, 1),
-            audio_delta(10.5, 2205, 1),
-            audio_delta(10.55, 2205, 2),
+            FIRST_INPUT_APPEND,
+            input_append_record(10.09, 1),
+            audio_delta_record(10.5, 2205, 1),
+            audio_delta_record(10.55, 2205, 2),
             {
                 "direction": "receive",
                 "time_s": 10.6,
@@ -254,7 +268,7 @@ def test_playout_keeps_initial_delay_and_mid_stream_gap(tmp_path: Path) -> None:
                     "delta": "hi",
                 },
             },
-            audio_delta(11.5, 1000, 3),
+            audio_delta_record(11.5, 1000, 3),
         ],
     )
 
@@ -291,10 +305,12 @@ def test_playout_keeps_initial_delay_and_mid_stream_gap(tmp_path: Path) -> None:
 
 
 def test_truncated_or_silent_traces_are_reconstruction_failures(tmp_path: Path) -> None:
-    truncated = audio_delta(10.5, 1, 1)
+    truncated = audio_delta_record(10.5, 1, 1)
     truncated["event"]["delta"] = base64.b64encode(b"\x01\x00\x02").decode()
     write_trace(
-        tmp_path / "continuous.jsonl", [APPEND, truncated], tail='{"direction": '
+        tmp_path / "continuous.jsonl",
+        [FIRST_INPUT_APPEND, truncated],
+        tail='{"direction": ',
     )
     errors = reconstruct_output(tmp_path)["errors"]
     assert "trace line 2: truncated PCM16 audio delta" in errors

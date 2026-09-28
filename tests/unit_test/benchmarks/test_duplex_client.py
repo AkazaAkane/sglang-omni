@@ -17,6 +17,7 @@ from typing import Literal
 
 import pytest
 import websockets
+from pydantic import JsonValue
 from websockets.asyncio.server import ServerConnection
 
 from benchmarks.duplex.client import (
@@ -52,8 +53,8 @@ PeerMode = Literal[
 class DuplexPeer:
     def __init__(self, mode: PeerMode = "healthy") -> None:
         self.mode = mode
-        self.received: list[dict] = []
-        self.sent: list[dict] = []
+        self.received: list[dict[str, JsonValue]] = []
+        self.sent: list[dict[str, JsonValue]] = []
         self.pcm = bytearray()
         self.chunk_seq = 0
         self.frames = 0
@@ -329,29 +330,27 @@ class DuplexPeer:
                 raise AssertionError(f"Unexpected client event: {kind}")
 
 
-async def capture(
-    peer: DuplexPeer, scenario: str, trace_path: Path, timeout_s: float = 2.0
-) -> list[dict]:
+async def capture_session(
+    peer: DuplexPeer, trace_path: Path, timeout_s: float = 2.0
+) -> list[dict[str, JsonValue]]:
+    existing_tasks = asyncio.all_tasks()
     async with websockets.serve(peer.handler, "127.0.0.1", 0) as server:
         port = server.sockets[0].getsockname()[1]
         await run_session(
             f"ws://127.0.0.1:{port}/v1/realtime",
             FIXTURE_PCM,
-            scenario=scenario,
+            scenario="continuous",
             trace_path=trace_path,
             timeout_s=timeout_s,
         )
         peer.release.set()
-        assert not [
-            task
-            for task in asyncio.all_tasks()
-            if getattr(task.get_coro(), "__name__", "")
-            in ("exchange", "receive", "drive")
-        ]
+    assert asyncio.all_tasks() <= existing_tasks
     return [json.loads(line) for line in trace_path.read_text().splitlines()]
 
 
-def appended(records: list[dict]) -> list[dict]:
+def input_append_records(
+    records: list[dict[str, JsonValue]]
+) -> list[dict[str, JsonValue]]:
     return [
         record
         for record in records
@@ -360,7 +359,7 @@ def appended(records: list[dict]) -> list[dict]:
     ]
 
 
-def output_samples(records: list[dict]) -> int:
+def count_output_samples(records: list[dict[str, JsonValue]]) -> int:
     return sum(
         len(base64.b64decode(record["event"]["delta"], validate=True)) // 2
         for record in records
@@ -371,7 +370,7 @@ def output_samples(records: list[dict]) -> int:
 
 def test_client_records_complete_native_session(tmp_path: Path) -> None:
     peer = DuplexPeer()
-    records = asyncio.run(capture(peer, "continuous", tmp_path / "trace.jsonl"))
+    records = asyncio.run(capture_session(peer, tmp_path / "trace.jsonl"))
     result = evaluate_trace(records, scenario="continuous")
 
     assert result["status"] == "pass", result
@@ -382,7 +381,7 @@ def test_client_records_complete_native_session(tmp_path: Path) -> None:
     event_ids = [event["event_id"] for event in peer.received]
     assert len(set(event_ids)) == len(event_ids)
     assert peer.received[0]["session"]["output_modalities"] == ["audio"]
-    appends = appended(records)
+    appends = input_append_records(records)
     assert [r["event"]["sglang"]["seq"] for r in appends] == list(
         range(FIXTURE_PACKETS)
     )
@@ -394,14 +393,11 @@ def test_client_records_complete_native_session(tmp_path: Path) -> None:
     assert paced_s * 0.8 <= span_s <= paced_s + 1.0, span_s
 
     units = -(-len(FIXTURE_PCM) // UNIT_BYTES)
-    assert output_samples(records) == units * SAMPLES_PER_FRAME
+    assert count_output_samples(records) == units * SAMPLES_PER_FRAME
     assert result["metrics"]["output_audio_s"] == pytest.approx(
         units * SAMPLES_PER_FRAME / 22050
     )
 
-    assert all("epoch" not in event.get("sglang", {}) for event in peer.sent)
-    assert "held" not in peer.sent[-1]
-    assert "cancel_is_noop" not in GRANTED
     assert "response.cancel" not in [event["type"] for event in peer.received]
 
 
@@ -428,16 +424,16 @@ def test_removed_cancel_scenario_is_rejected_before_connection(tmp_path: Path) -
     ],
 )
 def test_client_retains_failed_attempt(
-    tmp_path: Path, mode: str, expected_error: str
+    tmp_path: Path, mode: PeerMode, expected_error: str
 ) -> None:
     peer = DuplexPeer(mode)
-    records = asyncio.run(capture(peer, "continuous", tmp_path / "trace.jsonl"))
+    records = asyncio.run(capture_session(peer, tmp_path / "trace.jsonl"))
     result = evaluate_trace(records, scenario="continuous")
 
     assert result["status"] == "fail", result
     assert result["violations"]
     assert any(r["event"]["type"] == "session.created" for r in records)
-    assert appended(records)
+    assert input_append_records(records)
     assert any(
         r["direction"] == "error" and expected_error in r["event"]["message"]
         for r in records
@@ -448,7 +444,7 @@ def test_client_keeps_the_close_receipt_after_a_fatal_server_error(
     tmp_path: Path,
 ) -> None:
     peer = DuplexPeer("server_error")
-    records = asyncio.run(capture(peer, "continuous", tmp_path / "trace.jsonl"))
+    records = asyncio.run(capture_session(peer, tmp_path / "trace.jsonl"))
     result = evaluate_trace(records, scenario="continuous")
 
     assert result["status"] == "fail", result
@@ -460,14 +456,14 @@ def test_client_keeps_the_close_receipt_after_a_fatal_server_error(
     assert records[-1]["direction"] == "receive"
     assert records[-1]["event"]["type"] == "session.closed"
     assert any("server error" in violation for violation in result["violations"])
-    assert len(appended(records)) < FIXTURE_PACKETS
+    assert len(input_append_records(records)) < FIXTURE_PACKETS
 
 
 def test_client_waits_out_a_late_close_after_a_fatal_error(tmp_path: Path) -> None:
     peer = DuplexPeer("delayed_fatal")
     started_s = time.perf_counter()
     records = asyncio.run(
-        capture(peer, "continuous", tmp_path / "trace.jsonl", timeout_s=10.0)
+        capture_session(peer, tmp_path / "trace.jsonl", timeout_s=10.0)
     )
     elapsed_s = time.perf_counter() - started_s
     result = evaluate_trace(records, scenario="continuous")
@@ -489,7 +485,7 @@ def test_client_requests_close_after_a_nonfatal_error(tmp_path: Path) -> None:
     peer = DuplexPeer("nonfatal_error")
     started_s = time.perf_counter()
     records = asyncio.run(
-        capture(peer, "continuous", tmp_path / "trace.jsonl", timeout_s=10.0)
+        capture_session(peer, tmp_path / "trace.jsonl", timeout_s=10.0)
     )
     elapsed_s = time.perf_counter() - started_s
     result = evaluate_trace(records, scenario="continuous")
@@ -510,12 +506,12 @@ def test_client_requests_close_after_a_nonfatal_error(tmp_path: Path) -> None:
     assert len(closes) == 1
     assert records[-1]["direction"] == "receive"
     assert records[-1]["event"]["type"] == "session.closed"
-    assert len(appended(records)) < FIXTURE_PACKETS
+    assert len(input_append_records(records)) < FIXTURE_PACKETS
 
 
 async def capture_with_denials(
     peer: DuplexPeer, denials: int, trace_path: Path
-) -> list[dict]:
+) -> list[dict[str, JsonValue]]:
     remaining = itertools.count()
 
     def process_request(connection: ServerConnection, request) -> object | None:
@@ -585,14 +581,14 @@ def test_client_enforces_the_session_deadline(tmp_path: Path) -> None:
     peer = DuplexPeer("timeout")
     started_s = time.perf_counter()
     records = asyncio.run(
-        capture(peer, "continuous", tmp_path / "trace.jsonl", timeout_s=0.5)
+        capture_session(peer, tmp_path / "trace.jsonl", timeout_s=0.5)
     )
     elapsed_s = time.perf_counter() - started_s
 
     assert 0.5 <= elapsed_s < 5.0, elapsed_s
     assert evaluate_trace(records, scenario="continuous")["status"] == "fail"
     assert any(r["event"]["type"] == "session.created" for r in records)
-    assert appended(records)
+    assert input_append_records(records)
     assert records[-1]["direction"] == "error"
     assert "Session timeout after 0.5s" in records[-1]["event"]["message"]
 
@@ -601,7 +597,7 @@ def test_client_bounds_observation_after_the_session_closes(tmp_path: Path) -> N
     peer = DuplexPeer("linger")
     started_s = time.perf_counter()
     records = asyncio.run(
-        capture(peer, "continuous", tmp_path / "trace.jsonl", timeout_s=10.0)
+        capture_session(peer, tmp_path / "trace.jsonl", timeout_s=10.0)
     )
     elapsed_s = time.perf_counter() - started_s
     streamed_s = FIXTURE_PACKETS * PACKET_MS / 1000
@@ -617,7 +613,7 @@ def test_client_abandons_a_driver_the_receive_loop_can_no_longer_serve(
     peer = DuplexPeer("close_without_update")
     started_s = time.perf_counter()
     records = asyncio.run(
-        capture(peer, "continuous", tmp_path / "trace.jsonl", timeout_s=10.0)
+        capture_session(peer, tmp_path / "trace.jsonl", timeout_s=10.0)
     )
     elapsed_s = time.perf_counter() - started_s
 

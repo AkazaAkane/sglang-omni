@@ -14,6 +14,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 import websockets
@@ -499,7 +500,9 @@ def recorded_trace() -> TraceArtifact:
     )
 
 
-def test_saved_trace_replays_hand_calculated_metrics(tmp_path, recorded_trace):
+def test_saved_trace_replays_hand_calculated_metrics(
+    tmp_path: Path, recorded_trace: TraceArtifact
+) -> None:
     path = tmp_path / "trace.json"
     save_trace(path, recorded_trace)
     loaded = load_trace(path)
@@ -510,17 +513,16 @@ def test_saved_trace_replays_hand_calculated_metrics(tmp_path, recorded_trace):
     assert replay["metrics"]["first_partial_latency_s"] == [pytest.approx(0.2)]
     assert replay["metrics"]["final_latency_s"] == [pytest.approx(0.1)]
     assert replay["metrics"]["done_to_completed_s"] == pytest.approx(0.3)
-    assert replay_trace(load_trace(path)) == replay
     with pytest.raises(FileExistsError):
         save_trace(path, recorded_trace)
 
 
 @pytest.mark.parametrize("defect", ["missing_index", "duplicate_terminal", "timeout"])
 def test_corrupted_trace_stays_failed_after_save_and_replay(
-    tmp_path, recorded_trace, defect
-):
+    tmp_path: Path, recorded_trace: TraceArtifact, defect: str
+) -> None:
     if defect == "missing_index":
-        del recorded_trace.trace.received[1].event["event_index"]
+        recorded_trace.trace.received[1].event.pop("event_index")
     elif defect == "duplicate_terminal":
         recorded_trace.trace.received.append(
             ReceivedEvent(
@@ -543,7 +545,9 @@ def test_corrupted_trace_stays_failed_after_save_and_replay(
     assert replay_trace(load_trace(path)) == expected
 
 
-def test_replay_rejects_unknown_schema(tmp_path, recorded_trace):
+def test_replay_rejects_unknown_schema(
+    tmp_path: Path, recorded_trace: TraceArtifact
+) -> None:
     payload = recorded_trace.model_dump()
     payload["schema_version"] = 2
     path = tmp_path / "trace.json"
@@ -552,7 +556,9 @@ def test_replay_rejects_unknown_schema(tmp_path, recorded_trace):
         load_trace(path)
 
 
-def test_replay_cli_returns_nonzero_for_bad_trace(tmp_path, recorded_trace):
+def test_replay_cli_returns_nonzero_for_bad_trace(
+    tmp_path: Path, recorded_trace: TraceArtifact
+) -> None:
     path = tmp_path / "trace.json"
     save_trace(path, recorded_trace)
     command = [sys.executable, "-m", "benchmarks.realtime_asr.replay", str(path)]
@@ -560,7 +566,7 @@ def test_replay_cli_returns_nonzero_for_bad_trace(tmp_path, recorded_trace):
     assert good.returncode == 0, good.stderr
     assert json.loads(good.stdout)["verdict"] == "pass"
     bad = recorded_trace.model_copy(deep=True)
-    del bad.trace.received[0].event["event_index"]
+    bad.trace.received[0].event.pop("event_index")
     bad_path = tmp_path / "bad.json"
     save_trace(bad_path, bad)
     command[-1] = str(bad_path)

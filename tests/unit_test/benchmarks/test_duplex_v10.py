@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import soundfile
+from pydantic import JsonValue
 
 from benchmarks.duplex import v10_scoring
 from benchmarks.duplex.v10_dataset import (
@@ -45,7 +46,9 @@ ANNOTATIONS = {
 }
 
 
-def write_sample(root: Path, subset: str, name: str = "1", annotation=None) -> Path:
+def write_sample(
+    root: Path, subset: str, name: str = "1", annotation: str | None = None
+) -> Path:
     sample_dir = root / subset / name
     sample_dir.mkdir(parents=True)
     soundfile.write(
@@ -54,7 +57,7 @@ def write_sample(root: Path, subset: str, name: str = "1", annotation=None) -> P
     if subset in ANNOTATIONS:
         filename, entries = ANNOTATIONS[subset]
         (sample_dir / filename).write_text(
-            annotation if isinstance(annotation, str) else json.dumps(entries)
+            annotation if annotation is not None else json.dumps(entries)
         )
     return sample_dir
 
@@ -64,7 +67,9 @@ def write_dataset(root: Path) -> None:
         write_sample(root, subset)
 
 
-def chunk(start_s: float, end_s: float, text: str = "word") -> dict:
+def word_chunk(
+    start_s: float, end_s: float, text: str = "word"
+) -> dict[str, JsonValue]:
     return {"text": text, "timestamp": [start_s, end_s]}
 
 
@@ -160,13 +165,13 @@ def test_missing_files_and_selection_errors(tmp_path: Path) -> None:
     ("chunks", "takeover"),
     [
         ([], False),
-        ([chunk(0.0, 0.9)] * 3, False),
-        ([chunk(0.0, 0.2)] * 4, True),
-        ([chunk(0.0, 0.1), chunk(0.9, 1.0)], True),
+        ([word_chunk(0.0, 0.9)] * 3, False),
+        ([word_chunk(0.0, 0.2)] * 4, True),
+        ([word_chunk(0.0, 0.1), word_chunk(0.9, 1.0)], True),
     ],
 )
 def test_takeover_rule_matches_upstream_thresholds(
-    chunks: list[dict], takeover: bool
+    chunks: list[dict[str, JsonValue]], takeover: bool
 ) -> None:
     assert v10_scoring.takes_turn(chunks) is takeover
 
@@ -174,7 +179,7 @@ def test_takeover_rule_matches_upstream_thresholds(
 def test_pause_handling_only_counts_words_inside_the_input() -> None:
     record = v10_scoring.score_pause_handling(
         sample_id="p/1",
-        chunks=[chunk(0.1, 0.2), chunk(2.0, 2.1), chunk(2.2, 3.5)],
+        chunks=[word_chunk(0.1, 0.2), word_chunk(2.0, 2.1), word_chunk(2.2, 3.5)],
         input_duration_s=1.0,
     )
 
@@ -184,7 +189,7 @@ def test_pause_handling_only_counts_words_inside_the_input() -> None:
 
 
 def test_response_latency_gates_and_window() -> None:
-    chunks = [chunk(0.2, 0.4), chunk(1.5, 1.8), chunk(1.9, 2.8), chunk(9.5, 9.9)]
+    chunks = [word_chunk(0.2, 0.4), word_chunk(1.5, 1.8), word_chunk(1.9, 2.8), word_chunk(9.5, 9.9)]
     common = {"chunks": chunks, "input_duration_s": 8.0}
 
     turn = v10_scoring.score_response(
@@ -245,7 +250,7 @@ def test_backchannel_takeover_rate_and_timing() -> None:
     common = {"sample_id": "b/1", "input_duration_s": 2.0, "reference": reference}
 
     record = v10_scoring.score_backchannel(
-        chunks=[chunk(0.1, 0.3, "yeah")],
+        chunks=[word_chunk(0.1, 0.3, "yeah")],
         output_segments=[[0.1, 0.4], [2.5, 2.9]],
         **common,
     )
@@ -255,10 +260,10 @@ def test_backchannel_takeover_rate_and_timing() -> None:
         **{**common, "input_duration_s": 4.0},
     )
     wordy = v10_scoring.score_backchannel(
-        chunks=[chunk(0.1, 0.2)] * 4, output_segments=[[0.1, 0.5]], **common
+        chunks=[word_chunk(0.1, 0.2)] * 4, output_segments=[[0.1, 0.5]], **common
     )
     drawn_out = v10_scoring.score_backchannel(
-        chunks=[chunk(0.1, 1.4, "hmm")], output_segments=[[0.1, 1.5]], **common
+        chunks=[word_chunk(0.1, 1.4, "hmm")], output_segments=[[0.1, 1.5]], **common
     )
     silent = v10_scoring.score_backchannel(chunks=[], output_segments=[], **common)
     unreferenced = v10_scoring.score_backchannel(
@@ -281,7 +286,7 @@ def test_summary_keeps_selected_denominator_and_rejects_strays() -> None:
     turn = v10_scoring.score_response(
         sample_id="t/1",
         task="turn_taking",
-        chunks=[chunk(1.2, 1.4), chunk(1.5, 2.5)],
+        chunks=[word_chunk(1.2, 1.4), word_chunk(1.5, 2.5)],
         event_start_s=1.0,
         event_end_s=1.0,
         input_duration_s=8.0,
@@ -305,7 +310,7 @@ def test_summary_keeps_selected_denominator_and_rejects_strays() -> None:
         v10_scoring.summarize([turn], {"p/1": "pause_handling"})
 
 
-def run_cli(argv: list[str]) -> tuple[int, dict]:
+def run_cli(argv: list[str]) -> tuple[int, dict[str, JsonValue]]:
     stdout = io.StringIO()
     with contextlib.redirect_stdout(stdout):
         code = main(argv)
