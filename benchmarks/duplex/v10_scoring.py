@@ -68,6 +68,9 @@ SCORING_CONFIG = {
 }
 WORD_TASKS: tuple[Task, ...] = ("pause_handling", "turn_taking", "user_interruption")
 TASKS: tuple[Task, ...] = (*WORD_TASKS, "backchannel")
+# Only "scored" records enter a task's averages, the other statuses are counted.
+ScoreStatus = Literal["scored", "spoke_before_turn_end", "not_exercised"]
+SCORED: ScoreStatus = "scored"
 CENSOR_TOLERANCE_S = 0.05
 
 
@@ -214,7 +217,7 @@ def score_pause_handling(
         "config_hash": SCORING_CONFIG_HASH,
         "sample_id": sample_id,
         "task": "pause_handling",
-        "status": "scored",
+        "status": SCORED,
         "window_s": [0.0, input_duration_s],
         "num_words": len(window_chunks),
         "takeover": takes_turn(window_chunks),
@@ -235,13 +238,13 @@ def score_response(
     speaking_at_event = any(
         start_s <= event_start_s < end_s for start_s, end_s in output_segments
     )
-    status: Literal["spoke_before_turn_end", "not_exercised", "scored"]
+    status: ScoreStatus
     if task == "turn_taking" and speaking_at_event:
         status = "spoke_before_turn_end"
     elif task == "user_interruption" and not speaking_at_event:
         status = "not_exercised"
     else:
-        status = "scored"
+        status = SCORED
     window_chunks = [
         chunk
         for chunk in chunks
@@ -332,7 +335,7 @@ def score_backchannel(
         "config_hash": SCORING_CONFIG_HASH,
         "sample_id": sample_id,
         "task": "backchannel",
-        "status": "scored",
+        "status": SCORED,
         "window_s": [0.0, input_duration_s],
         "takeover": takeover,
         "backchannels": backchannels,
@@ -363,9 +366,7 @@ def summarize(
         sample_ids = sorted(key for key, value in selected.items() if value == task)
         present = [by_id[key] for key in sample_ids if key in by_id]
         scored = [
-            score_record
-            for score_record in present
-            if score_record["status"] == "scored"
+            score_record for score_record in present if score_record["status"] == SCORED
         ]
         summary = {
             "selected": len(sample_ids),
