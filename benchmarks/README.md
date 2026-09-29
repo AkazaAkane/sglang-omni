@@ -698,9 +698,11 @@ the input duration, matching upstream's equal-length `output.wav`.
   turn or interruption ends; latency is the first such word's start minus that
   end, reported only for takeovers. Silero VAD on the output gates both: a
   turn-taking sample whose model is already speaking when the user turn ends is
-  `spoke_before_turn_end` (talking over the user is not a response), and an
-  interruption with no model speech at its onset is `not_exercised`. Neither
-  enters the takeover rate or latency; their counts are reported. A sample whose
+  `spoke_before_turn_end` (talking over the user is not a response), an
+  interruption with no model speech at its onset is `not_exercised`, and an
+  interruption the model talks straight through, one VAD segment from before
+  its onset to after its end, is `talked_through`. None of these enter the
+  takeover rate or latency; their counts are reported. A sample whose
   output speech reaches the input end is flagged `right_censored`.
 - Backchannel runs Silero VAD on the output. It reports backchannel rate and,
   with `--backchannel-reference` (upstream `icc_gt_distribution.json`), the
@@ -711,8 +713,8 @@ the input duration, matching upstream's equal-length `output.wav`.
 Selected samples without a record count as `missing`; invalid, unqualified or
 untranscribed samples are listed with an `unscored_reason`. This is not the
 upstream evaluation code. Upstream has no speaking gates: a model that talks
-through the user turn scores a clamped zero latency there, and every
-interruption sample counts. The backchannel classifier differs from upstream
+through the user turn or the interruption scores a near-zero latency there,
+and every interruption sample counts. The backchannel classifier differs from upstream
 `eval_backchannel.py`: segments after the input end are ignored and others are
 clipped to it, and any takeover segment marks the sample (upstream keeps the
 last segment's verdict and stops at the first segment over 3 s). Interruption

@@ -49,10 +49,12 @@ SCORING_CONFIG = {
     "word minus the turn end; if Silero VAD shows the model already speaking at the "
     "turn end it talked over the user, so the sample is spoke_before_turn_end and excluded",
     "user_interruption": "the user interrupts the model's answer; words starting at "
-    "or after the interruption end count, a takeover means the model addressed the "
-    "interruption, and latency is the first such word minus the interruption end; "
-    "if VAD shows no model speech at the interruption onset nothing was "
-    "interrupted, so the sample is not_exercised and excluded",
+    "or after the interruption end count, a takeover means the model spoke after "
+    "it, and latency is the first such word minus the interruption end; if VAD "
+    "shows no model speech at the interruption onset nothing was interrupted, so "
+    "the sample is not_exercised; if one VAD segment runs from before the onset "
+    "to after the interruption end the model never stopped, so the sample is "
+    "talked_through; both are excluded from the rate and latency",
     "right_censored": "flag only: the model's output speech reaches within 50 ms of "
     "the input end, so the window may have cut a response short; the score still "
     "counts",
@@ -69,7 +71,9 @@ SCORING_CONFIG = {
 WORD_TASKS: tuple[Task, ...] = ("pause_handling", "turn_taking", "user_interruption")
 TASKS: tuple[Task, ...] = (*WORD_TASKS, "backchannel")
 # Only "scored" records enter a task's averages, the other statuses are counted.
-ScoreStatus = Literal["scored", "spoke_before_turn_end", "not_exercised"]
+ScoreStatus = Literal[
+    "scored", "spoke_before_turn_end", "not_exercised", "talked_through"
+]
 SCORED: ScoreStatus = "scored"
 CENSOR_TOLERANCE_S = 0.05
 
@@ -297,12 +301,22 @@ def score_interruption(
     input_duration_s: float,
     output_segments: list[list[float]],
 ) -> dict[str, JsonValue]:
-    """An interruption of a silent model interrupted nothing."""
+    """A silent model was not interrupted; one that never paused did not respond."""
     speaking = speaking_at(output_segments, interruption_start_s)
+    status: ScoreStatus
+    if not speaking:
+        status = "not_exercised"
+    elif any(
+        start_s <= interruption_start_s and end_s > interruption_end_s
+        for start_s, end_s in output_segments
+    ):
+        status = "talked_through"
+    else:
+        status = SCORED
     return score_response_after(
         sample_id=sample_id,
         task="user_interruption",
-        status=SCORED if speaking else "not_exercised",
+        status=status,
         speaking_at_event=speaking,
         chunks=chunks,
         user_end_s=interruption_end_s,

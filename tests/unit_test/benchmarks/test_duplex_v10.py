@@ -220,6 +220,20 @@ def test_response_latency_gates_and_window() -> None:
         output_segments=[[0.2, 0.4], [1.5, 7.99]],
         **common,
     )
+    talked_through = v10_scoring.score_interruption(
+        sample_id="i/3",
+        interruption_start_s=0.3,
+        interruption_end_s=1.0,
+        output_segments=[[0.2, 2.8]],
+        **common,
+    )
+    paused = v10_scoring.score_interruption(
+        sample_id="i/4",
+        interruption_start_s=0.3,
+        interruption_end_s=1.0,
+        output_segments=[[0.2, 0.6], [1.5, 2.8]],
+        **common,
+    )
     short = v10_scoring.score_turn_taking(
         sample_id="t/3",
         chunks=chunks[:1],
@@ -236,6 +250,9 @@ def test_response_latency_gates_and_window() -> None:
     assert talked_over["speaking_at_event"] is True
     assert silent["status"] == "not_exercised"
     assert interrupted["status"] == "scored" and interrupted["right_censored"] is True
+    assert talked_through["status"] == "talked_through"
+    assert talked_through["takeover"] is True and talked_through["latency_s"] == 0.5
+    assert paused["status"] == "scored"
     assert short["takeover"] is False and short["latency_s"] is None
 
 
