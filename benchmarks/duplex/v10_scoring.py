@@ -224,31 +224,26 @@ def score_pause_handling(
     }
 
 
-def score_response(
+def speaking_at(output_segments: list[list[float]], moment_s: float) -> bool:
+    return any(start_s <= moment_s < end_s for start_s, end_s in output_segments)
+
+
+def score_response_after(
     *,
     sample_id: str,
     task: Task,
+    status: ScoreStatus,
+    speaking_at_event: bool,
     chunks: list[dict[str, JsonValue]],
-    event_start_s: float,
-    event_end_s: float,
+    user_end_s: float,
     input_duration_s: float,
     output_segments: list[list[float]],
 ) -> dict[str, JsonValue]:
-    """Score responses within the input window using VAD eligibility gates."""
-    speaking_at_event = any(
-        start_s <= event_start_s < end_s for start_s, end_s in output_segments
-    )
-    status: ScoreStatus
-    if task == "turn_taking" and speaking_at_event:
-        status = "spoke_before_turn_end"
-    elif task == "user_interruption" and not speaking_at_event:
-        status = "not_exercised"
-    else:
-        status = SCORED
+    """Takeover and latency of the words after user_end_s, inside the input window."""
     window_chunks = [
         chunk
         for chunk in chunks
-        if event_end_s <= chunk["timestamp"][0] < input_duration_s
+        if user_end_s <= chunk["timestamp"][0] < input_duration_s
     ]
     takeover = takes_turn(window_chunks)
     return {
@@ -257,7 +252,7 @@ def score_response(
         "sample_id": sample_id,
         "task": task,
         "status": status,
-        "window_s": [event_end_s, input_duration_s],
+        "window_s": [user_end_s, input_duration_s],
         "speaking_at_event": speaking_at_event,
         "right_censored": any(
             end_s >= input_duration_s - CENSOR_TOLERANCE_S
@@ -266,9 +261,54 @@ def score_response(
         "num_words": len(window_chunks),
         "takeover": takeover,
         "latency_s": (
-            window_chunks[0]["timestamp"][0] - event_end_s if takeover else None
+            window_chunks[0]["timestamp"][0] - user_end_s if takeover else None
         ),
     }
+
+
+def score_turn_taking(
+    *,
+    sample_id: str,
+    chunks: list[dict[str, JsonValue]],
+    turn_end_s: float,
+    input_duration_s: float,
+    output_segments: list[list[float]],
+) -> dict[str, JsonValue]:
+    """A model already speaking when the user turn ends talked over the user."""
+    speaking = speaking_at(output_segments, turn_end_s)
+    return score_response_after(
+        sample_id=sample_id,
+        task="turn_taking",
+        status="spoke_before_turn_end" if speaking else SCORED,
+        speaking_at_event=speaking,
+        chunks=chunks,
+        user_end_s=turn_end_s,
+        input_duration_s=input_duration_s,
+        output_segments=output_segments,
+    )
+
+
+def score_interruption(
+    *,
+    sample_id: str,
+    chunks: list[dict[str, JsonValue]],
+    interruption_start_s: float,
+    interruption_end_s: float,
+    input_duration_s: float,
+    output_segments: list[list[float]],
+) -> dict[str, JsonValue]:
+    """An interruption of a silent model interrupted nothing."""
+    speaking = speaking_at(output_segments, interruption_start_s)
+    return score_response_after(
+        sample_id=sample_id,
+        task="user_interruption",
+        status=SCORED if speaking else "not_exercised",
+        speaking_at_event=speaking,
+        chunks=chunks,
+        user_end_s=interruption_end_s,
+        input_duration_s=input_duration_s,
+        output_segments=output_segments,
+    )
 
 
 def score_backchannel(

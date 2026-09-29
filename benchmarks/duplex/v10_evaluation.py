@@ -129,16 +129,24 @@ def score_run(
                 chunks=chunks,
                 input_duration_s=variant_state["input"]["duration_s"],
             )
-        else:
-            event_span = sample["events"][0]
+        elif task == "turn_taking":
             output_vad = speech_segments(output_wav)
-            event_end_s = event_span[0] if task == "turn_taking" else event_span[1]
-            score_record = v10_scoring.score_response(
+            score_record = v10_scoring.score_turn_taking(
                 sample_id=sample["id"],
-                task=task,
                 chunks=chunks,
-                event_start_s=event_span[0],
-                event_end_s=event_end_s,
+                turn_end_s=sample["events"][0][0],
+                input_duration_s=variant_state["input"]["duration_s"],
+                output_segments=output_vad["segments"],
+            )
+            score_record["output_vad"] = output_vad
+        else:
+            interruption_start_s, interruption_end_s = sample["events"][0]
+            output_vad = speech_segments(output_wav)
+            score_record = v10_scoring.score_interruption(
+                sample_id=sample["id"],
+                chunks=chunks,
+                interruption_start_s=interruption_start_s,
+                interruption_end_s=interruption_end_s,
                 input_duration_s=variant_state["input"]["duration_s"],
                 output_segments=output_vad["segments"],
             )

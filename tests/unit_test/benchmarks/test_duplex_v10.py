@@ -197,44 +197,33 @@ def test_response_latency_gates_and_window() -> None:
     ]
     common = {"chunks": chunks, "input_duration_s": 8.0}
 
-    turn = v10_scoring.score_response(
+    turn = v10_scoring.score_turn_taking(
         sample_id="t/1",
-        task="turn_taking",
-        event_start_s=1.0,
-        event_end_s=1.0,
+        turn_end_s=1.0,
         output_segments=[[0.2, 0.4], [1.5, 2.8]],
         **common,
     )
-    talked_over = v10_scoring.score_response(
-        sample_id="t/2",
-        task="turn_taking",
-        event_start_s=1.0,
-        event_end_s=1.0,
-        output_segments=[[0.2, 2.8]],
-        **common,
+    talked_over = v10_scoring.score_turn_taking(
+        sample_id="t/2", turn_end_s=1.0, output_segments=[[0.2, 2.8]], **common
     )
-    silent = v10_scoring.score_response(
+    silent = v10_scoring.score_interruption(
         sample_id="i/1",
-        task="user_interruption",
-        event_start_s=0.5,
-        event_end_s=1.0,
+        interruption_start_s=0.5,
+        interruption_end_s=1.0,
         output_segments=[[1.5, 2.8]],
         **common,
     )
-    interrupted = v10_scoring.score_response(
+    interrupted = v10_scoring.score_interruption(
         sample_id="i/2",
-        task="user_interruption",
-        event_start_s=0.3,
-        event_end_s=1.0,
+        interruption_start_s=0.3,
+        interruption_end_s=1.0,
         output_segments=[[0.2, 0.4], [1.5, 7.99]],
         **common,
     )
-    short = v10_scoring.score_response(
+    short = v10_scoring.score_turn_taking(
         sample_id="t/3",
-        task="turn_taking",
         chunks=chunks[:1],
-        event_start_s=0.1,
-        event_end_s=0.1,
+        turn_end_s=0.1,
         input_duration_s=8.0,
         output_segments=[],
     )
@@ -288,12 +277,10 @@ def test_backchannel_takeover_rate_and_timing() -> None:
 
 def test_summary_keeps_selected_denominator_and_rejects_strays() -> None:
     selected = {"t/1": "turn_taking", "t/2": "turn_taking", "p/1": "pause_handling"}
-    turn = v10_scoring.score_response(
+    turn = v10_scoring.score_turn_taking(
         sample_id="t/1",
-        task="turn_taking",
         chunks=[word_chunk(1.2, 1.4), word_chunk(1.5, 2.5)],
-        event_start_s=1.0,
-        event_end_s=1.0,
+        turn_end_s=1.0,
         input_duration_s=8.0,
         output_segments=[[1.2, 2.5]],
     )
