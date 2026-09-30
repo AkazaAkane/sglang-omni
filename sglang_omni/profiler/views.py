@@ -527,9 +527,7 @@ def serving_summary(timelines: dict[str, RequestTimeline]) -> ServingSummary:
                         reasons[stage][reason] += 1
                     else:
                         pass
-                    if mode == "eager" and (
-                        reason or execution.get("graph_requested") is True
-                    ):
+                    if mode == "eager" and reason:
                         fallback_counts[stage] += 1
                     else:
                         pass

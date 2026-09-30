@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from sglang_omni.profiler.views import (
     build_report,
     hop_breakdown,
@@ -213,6 +215,39 @@ def test_serving_summary_serial_code2wav(tmp_path: Path) -> None:
     assert summary["inbox_depth"]["count"] == 3
     assert summary["active_request_count"]["avg"] == 16
     assert summary["decode_ms"]["avg"] == 1
+
+
+@pytest.mark.parametrize("event_name", ["code2wav_decode_end", "code2wav_batch_end"])
+@pytest.mark.parametrize(
+    "fallback_reason, fallback_count, success_rate",
+    [(None, 0, None), ("disabled", 1, 0.0)],
+)
+def test_serving_summary_graphs_off_and_disabled_runner(
+    tmp_path: Path,
+    event_name: str,
+    fallback_reason: str | None,
+    fallback_count: int,
+    success_rate: float | None,
+) -> None:
+    write_events(
+        tmp_path / "events_test.jsonl",
+        [
+            make_ev(
+                "r",
+                "code2wav",
+                event_name,
+                0,
+                execution_mode="eager",
+                fallback_reason=fallback_reason,
+            ),
+        ],
+    )
+    summary = build_report(tmp_path)["serving_summary"]["code2wav"]
+    assert summary["execution_mode"] == {"eager": 1}
+    assert summary["graph_hit_count"] == 0
+    assert summary["graph_fallback_count"] == fallback_count
+    assert summary["graph_attempt_success_rate"] == success_rate
+    assert summary["fallback_reason"] == ({"disabled": 1} if fallback_reason else {})
 
 
 def test_serving_summary_intentional_eager_and_cli(tmp_path: Path, capsys) -> None:

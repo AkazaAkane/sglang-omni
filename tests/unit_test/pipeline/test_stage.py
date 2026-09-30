@@ -78,6 +78,7 @@ def run_tp_profiler_rank(rank: int, event_dir: str, enable_torch: bool) -> None:
         tp_size=2,
     )
     scheduler = OmniScheduler.__new__(OmniScheduler)
+    scheduler.request_admission_lock = threading.RLock()
     scheduler.running_batch = SimpleNamespace(reqs=[SimpleNamespace(rid="r1")])
     scheduler.waiting_queue = []
     scheduler.pending_request_builds = {}

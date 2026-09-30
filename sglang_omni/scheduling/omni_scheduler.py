@@ -1876,6 +1876,10 @@ class OmniScheduler:
             batch_type = "prefill"
         else:
             batch_type = mode.name.lower()
+        with self.request_admission_lock:
+            request_build_pending = len(self.pending_request_builds)
+            request_build_backlog = len(self.backlogged_request_build_payloads)
+            waiting_queue_size = len(self.waiting_queue)
         pool = self.pool_stats_observer.get_pool_stats()
         _emit_event(
             request_id=batch.reqs[0].rid,
@@ -1886,13 +1890,13 @@ class OmniScheduler:
                 "batch_type": batch_type,
                 "forward_mode": mode.name,
                 "running_requests": len(self.running_batch.reqs),
-                "waiting_requests": len(self.waiting_queue),
+                "waiting_requests": waiting_queue_size,
                 "kv_usage": pool.get_max_pool_usage(),
                 "kv_used_tokens": pool.full_num_used,
                 "kv_available_tokens": pool.full_available_size,
                 "kv_evictable_tokens": pool.full_evictable_size,
-                "request_build_pending": len(self.pending_request_builds),
-                "request_build_backlog": len(self.backlogged_request_build_payloads),
+                "request_build_pending": request_build_pending,
+                "request_build_backlog": request_build_backlog,
             },
         )
 

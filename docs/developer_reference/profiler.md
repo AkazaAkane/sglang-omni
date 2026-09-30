@@ -77,6 +77,8 @@ Supporting events used for finer-grained breakdown:
 | Stage | `stage_stream_chunk_sent` | Each stream chunk (metadata `to_stage`, `chunk_id`, `modality`) |
 | Stage | `stage_stream_chunk_received` | Each stream chunk materialized and ready for the receiver scheduler, including coordinator terminal chunks |
 | AR scheduler | `scheduler_queue_enter` | Built request entered the scheduler queue |
+| AR scheduler | `scheduler_batch_start` | One launch-time batch sample: batch type/size, running/waiting requests, KV pool usage/tokens, and request-build pending/backlog counts |
+| AR scheduler | `scheduler_request_retracted` | Explicit scheduler retraction/requeue; excludes administrative pause retractions |
 | AR scheduler | `scheduler_first_emit` | First `stream_output_builder` emission per request |
 | Code2Wav | `code2wav_decode_start` | Serial decode start: trigger, start/end/new/context/window frames, active and threshold-ready requests, inbox depth |
 | Code2Wav | `code2wav_decode_launched` | Pipelined serial window whose vocoder work and asynchronous D2H copy have been enqueued; includes execution mode and window/new-frame counts |
@@ -128,9 +130,9 @@ clears both the thread-local slot and the contextvar.
 
 ## Lifecycle
 
-The recorder is process-local. It is started on every stage and on the
-coordinator when `POST /start_profile` (or `POST /start_request_profile`)
-is hit:
+The recorder is process-local. It is started on the coordinator and stages
+owning external I/O (single workers and TP leaders) when `POST /start_profile`
+(or `POST /start_request_profile`) is hit:
 
 1. Launcher receives the HTTP request.
 2. Coordinator starts its local recorder pointed at `<event_dir>`.
@@ -224,8 +226,11 @@ mode and fallback reason histograms count sub-batches, using the existing
 of graph hits over graph hits plus explicit eager fallbacks. Intentionally
 eager execution without a fallback reason is visible in `execution_mode`
 but excluded from graph attempts. A missing denominator produces `null`,
-not a zero success rate. This is success among graph attempts, not the fraction
-of all executions using a graph; `execution_mode` retains the execution counts.
+not a zero success rate. Explicitly turning graphs off removes the runner,
+so eager execution has no fallback reason and the rate is `null`. A configured
+runner reporting `fallback_reason="disabled"` records an explicit fallback;
+with no graph hits, its rate is `0.0`. This is success among graph attempts,
+not the fraction of all executions using a graph; `execution_mode` retains the execution counts.
 Missing optional metrics are omitted; empty event
 directories return an empty serving summary. Counts cover the recorded
 worker events, so combine only the intended benchmark's event files.

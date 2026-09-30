@@ -54,6 +54,7 @@ class SchedulerStageMetricsRecorder:
 )
 def test_scheduler_batch_snapshot(monkeypatch, mode, expected) -> None:
     scheduler = OmniScheduler.__new__(OmniScheduler)
+    scheduler.request_admission_lock = threading.RLock()
     scheduler.running_batch = SimpleNamespace(reqs=[1, 2])
     scheduler.waiting_queue = [1, 2, 3]
     pool = PoolStats(
