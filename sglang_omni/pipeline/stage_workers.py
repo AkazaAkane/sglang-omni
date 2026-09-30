@@ -220,8 +220,13 @@ def patched_spawn_env(
         "SGLANG_OMNI_PLATFORM_SPEC": get_platform_spec(current_platform),
         **(extra_env or {}),
     }
-    if spec.cpu_threads is not None and "OMP_NUM_THREADS" not in os.environ:
+    if (
+        spec.cpu_threads is not None
+        and "OMP_NUM_THREADS" not in os.environ
+        and "OMP_NUM_THREADS" not in updates
+    ):
         updates["OMP_NUM_THREADS"] = str(spec.cpu_threads)
+        updates["SGLANG_OMNI_OMP_FROM_CPU_PLAN"] = "1"
     else:
         pass
     backup = {key: os.environ.get(key) for key in updates}
