@@ -161,6 +161,7 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     assert speech_config.env_defaults == {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
     assert colocated_config.env_defaults == {
         "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0",
+        "OMP_NUM_THREADS": "8",
         "TOKENIZERS_PARALLELISM": "false",
     }
 
