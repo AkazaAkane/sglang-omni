@@ -87,20 +87,29 @@ async def run_concurrency(
         except (OSError, ValueError, KeyError, TypeError) as exc:
             session = {
                 "session_id": session_id,
+                "input_duration_s": duration_s,
                 "trace_file": str(trace_path),
                 "success": False,
                 "errors": [f"unreadable session artifacts: {exc}"],
                 "ttfa_s": None,
                 "send_lateness_s": distribution([]),
+                "late_send_count": 0,
+                "late_send_rate": None,
                 "output_gap_s": distribution([]),
+                "output_gap_excess_s": distribution([]),
+                "output_drift_s": distribution([]),
+                "final_output_drift_s": None,
                 "send_lateness_values_s": [],
                 "output_gap_values_s": [],
+                "output_gap_excess_values_s": [],
+                "output_drift_values_s": [],
                 "output_samples": 0,
                 "output_duration_s": 0.0,
                 "output_coverage": 0.0,
                 "underrun_count": 1,
                 "underrun_total_s": duration_s,
                 "underrun_worst_s": duration_s,
+                "underrun_ratio": 1.0,
             }
         if isinstance(result, BaseException):
             session["success"] = False
@@ -126,6 +135,10 @@ def format_ms(value: float | None) -> str:
     return f"{value * 1000:.1f}" if value is not None else "-"
 
 
+def format_percent(value: float | None) -> str:
+    return f"{value * 100:.1f}%" if value is not None else "-"
+
+
 def print_summary(summary: dict[str, JsonValue]) -> None:
     aggregate = summary["aggregate"]
     print(
@@ -133,24 +146,40 @@ def print_summary(summary: dict[str, JsonValue]) -> None:
         f"Duration: {summary['input_duration_s']:.2f}s  "
         f"Sessions: {aggregate['successful_sessions']}/{aggregate['attempted_sessions']}"
     )
-    print(f"{'Metric':22} {'p50':>9} {'p95':>9} {'p99':>9} {'max':>9}")
+    print(f"{'Metric':22} {'p50':>9} {'p75':>9} {'p95':>9} {'p99':>9} {'max':>9}")
     for label, name in (
         ("TTFA (ms)", "ttfa_s"),
         ("Send lateness (ms)", "send_lateness_s"),
         ("Output gap (ms)", "output_gap_s"),
+        ("Gap excess (ms)", "output_gap_excess_s"),
+        ("Output drift (ms)", "output_drift_s"),
     ):
         values = aggregate[name]
         print(
             f"{label:22} {format_ms(values['p50']):>9} "
+            f"{format_ms(values['p75']):>9} "
             f"{format_ms(values['p95']):>9} "
             f"{format_ms(values['p99']):>9} {format_ms(values['max']):>9}"
         )
     coverage = aggregate["output_coverage"]["p50"]
     print(f"Output coverage p50: {coverage * 100:.1f}%")
     print(
+        f"Late sends (>{aggregate['late_send_threshold_s'] * 1000:.0f}ms): "
+        f"{aggregate['late_send_count']}/{aggregate['send_lateness_s']['n']} "
+        f"({format_percent(aggregate['late_send_rate'])})"
+    )
+    print(
+        "Final output drift p50/p95: "
+        f"{format_ms(aggregate['final_output_drift_s']['p50'])}/"
+        f"{format_ms(aggregate['final_output_drift_s']['p95'])}ms"
+    )
+    print(
         f"Underrun sessions: {aggregate['underrun_sessions']}/"
         f"{aggregate['attempted_sessions']}  "
-        f"Total underrun: {aggregate['underrun_total_s'] * 1000:.1f}ms"
+        f"Count: {aggregate['underrun_count']}  "
+        f"Total/max: {aggregate['underrun_total_s'] * 1000:.1f}/"
+        f"{aggregate['underrun_worst_s'] * 1000:.1f}ms  "
+        f"Ratio: {format_percent(aggregate['underrun_ratio'])}"
     )
 
 
@@ -208,16 +237,25 @@ def main() -> None:
     if len(summaries) == 1:
         print_summary(summaries[0])
     else:
-        print("C  success  TTFA p95  gap p99  coverage p50  underrun sessions")
+        print(
+            "C  success  TTFA p95  gap p99  coverage p50  "
+            "late sends  final drift p50  underrun sessions  underrun ratio"
+        )
         for summary in summaries:
             aggregate = summary["aggregate"]
+            underrun_sessions = (
+                f"{aggregate['underrun_sessions']}/{aggregate['attempted_sessions']}"
+            )
             print(
                 f"{summary['concurrency']:<2} "
                 f"{aggregate['successful_sessions']}/{aggregate['attempted_sessions']:<7} "
                 f"{format_ms(aggregate['ttfa_s']['p95']):>8} "
                 f"{format_ms(aggregate['output_gap_s']['p99']):>8} "
                 f"{aggregate['output_coverage']['p50'] * 100:>12.1f}% "
-                f"{aggregate['underrun_sessions']}/{aggregate['attempted_sessions']}"
+                f"{format_percent(aggregate['late_send_rate']):>11} "
+                f"{format_ms(aggregate['final_output_drift_s']['p50']):>15} "
+                f"{underrun_sessions:>17} "
+                f"{format_percent(aggregate['underrun_ratio']):>15}"
             )
     print(f"Artifacts: {output_dir}")
 

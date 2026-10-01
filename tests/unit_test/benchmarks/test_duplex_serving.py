@@ -25,11 +25,14 @@ from benchmarks.duplex.client import (
 )
 from benchmarks.duplex.profiles import DEFAULT_PROFILE
 from benchmarks.duplex.serving import run_concurrency
-from benchmarks.duplex.serving_metrics import aggregate_sessions, session_metrics
+from benchmarks.duplex.serving_metrics import (
+    aggregate_sessions,
+    distribution,
+    session_metrics,
+)
 from tests.unit_test.benchmarks.test_duplex_client import DuplexPeer
 
 INPUT_DURATION_S = 0.32
-OUTPUT_PACKET = base64.b64encode(b"\x00\x00" * 1764).decode("ascii")
 
 
 def recorded_session(
@@ -38,6 +41,7 @@ def recorded_session(
     *,
     send_delay_s: float = 0.0,
     failed: bool = False,
+    output_samples: list[int] | None = None,
 ) -> dict[str, JsonValue]:
     trace_path.parent.mkdir(parents=True)
     receipts = [
@@ -50,13 +54,18 @@ def recorded_session(
         }
         for index in range(4)
     ]
+    packet_samples = output_samples or [1764] * len(output_times_s)
+    assert len(packet_samples) == len(output_times_s)
     records = [
         {
             "direction": "receive",
             "time_s": timestamp_s,
-            "event": {"type": "response.output_audio.delta", "delta": OUTPUT_PACKET},
+            "event": {
+                "type": "response.output_audio.delta",
+                "delta": base64.b64encode(b"\x00\x00" * samples).decode("ascii"),
+            },
         }
-        for timestamp_s in output_times_s
+        for timestamp_s, samples in zip(output_times_s, packet_samples)
     ]
     records.extend(
         [
@@ -99,25 +108,38 @@ def recorded_session(
 
 
 def test_synthetic_serving_metrics(tmp_path: Path) -> None:
+    assert distribution([0, 1, 2, 3])["p75"] == pytest.approx(2.25)
+    assert distribution([])["p75"] is None
     perfect = recorded_session(
         tmp_path / "perfect" / "trace.jsonl", [10, 10.08, 10.16, 10.24]
     )
     assert perfect["success"] is True
     assert perfect["ttfa_s"] == pytest.approx(0)
     assert perfect["output_gap_s"]["p99"] == pytest.approx(0.08)
+    assert perfect["output_gap_s"]["p75"] == pytest.approx(0.08)
+    assert perfect["output_gap_excess_s"]["max"] == pytest.approx(0)
+    assert perfect["output_drift_s"]["max"] == pytest.approx(0)
+    assert perfect["final_output_drift_s"] == pytest.approx(0)
+    assert perfect["late_send_rate"] == 0
     assert perfect["output_coverage"] == pytest.approx(1)
     assert perfect["underrun_count"] == 0
+    assert perfect["underrun_ratio"] == 0
 
     stalled = recorded_session(
         tmp_path / "stalled" / "trace.jsonl", [10, 10.08, 10.28, 10.36]
     )
     assert stalled["output_gap_s"]["max"] == pytest.approx(0.2)
+    assert stalled["output_gap_excess_s"]["max"] == pytest.approx(0.12)
+    assert stalled["output_drift_s"]["p75"] == pytest.approx(0.12)
+    assert stalled["final_output_drift_s"] == pytest.approx(0.12)
     assert stalled["underrun_count"] == 1
     assert stalled["underrun_total_s"] == pytest.approx(0.04)
+    assert stalled["underrun_ratio"] == pytest.approx(0.125)
 
     sparse = recorded_session(tmp_path / "sparse" / "trace.jsonl", [10, 10.08])
     assert sparse["output_coverage"] == pytest.approx(0.5)
     assert sparse["underrun_total_s"] == pytest.approx(0.16)
+    assert sparse["underrun_ratio"] == pytest.approx(0.5)
 
     late = recorded_session(
         tmp_path / "late" / "trace.jsonl",
@@ -125,12 +147,25 @@ def test_synthetic_serving_metrics(tmp_path: Path) -> None:
         send_delay_s=0.05,
     )
     assert late["send_lateness_s"]["p99"] == pytest.approx(0.05)
+    assert late["late_send_count"] == 4
+    assert late["late_send_rate"] == 1
+
+    batched = recorded_session(
+        tmp_path / "batched" / "trace.jsonl",
+        [10, 10.1, 10.19],
+        output_samples=[3528, 1764, 1764],
+    )
+    assert batched["output_gap_excess_s"]["max"] == pytest.approx(0.01)
+    assert batched["final_output_drift_s"] == pytest.approx(-0.05)
 
     silent = recorded_session(tmp_path / "silent" / "trace.jsonl", [])
     assert silent["success"] is False
     assert silent["ttfa_s"] is None
+    assert silent["output_drift_s"]["n"] == 0
+    assert silent["final_output_drift_s"] is None
     assert silent["output_coverage"] == 0
     assert silent["underrun_total_s"] == INPUT_DURATION_S
+    assert silent["underrun_ratio"] == 1
 
     failed = recorded_session(
         tmp_path / "failed" / "trace.jsonl", [10, 10.08], failed=True
@@ -140,6 +175,9 @@ def test_synthetic_serving_metrics(tmp_path: Path) -> None:
     assert aggregate["successful_sessions"] == 1
     assert aggregate["output_coverage"]["p50"] == pytest.approx(0.5)
     assert aggregate["ttfa_s"]["n"] == 2
+    assert aggregate["final_output_drift_s"]["n"] == 2
+    assert aggregate["late_send_rate"] == 0
+    assert aggregate["underrun_ratio"] == pytest.approx(0.5)
 
 
 def test_scheduled_deadlines_do_not_follow_late_sends() -> None:
@@ -207,6 +245,7 @@ def test_coordinator_keeps_failed_session(tmp_path: Path) -> None:
     assert summary["configured_sessions"] == 2
     assert summary["aggregate"]["attempted_sessions"] == 3
     assert summary["aggregate"]["successful_sessions"] == 2
+    assert summary["aggregate"]["underrun_ratio"] >= 1 / 3
     assert [session["success"] for session in summary["sessions"]] == [
         False,
         True,
@@ -259,6 +298,9 @@ def test_serving_cli_sweep_against_fake_server(tmp_path: Path) -> None:
     _, output = asyncio.run(run())
     assert "1/1" in output
     assert "2/2" in output
+    assert "late sends" in output
+    assert "underrun sessions" in output
+    assert "underrun ratio" in output
     summaries = json.loads((tmp_path / "results" / "summary.json").read_text())["runs"]
     assert [run["aggregate"]["attempted_sessions"] for run in summaries] == [1, 2]
     assert [run["aggregate"]["successful_sessions"] for run in summaries] == [1, 2]

@@ -15,12 +15,20 @@ from benchmarks.duplex.client import PACKET_BYTES, SAMPLE_RATE, SEND_RECEIPTS_FI
 from benchmarks.duplex.profiles import PROFILES, ProfileName
 
 PLAYBACK_EPSILON_S = 1e-9
+LATE_SEND_THRESHOLD_S = 0.02
 
 
 def distribution(values: list[float]) -> dict[str, float | int | None]:
     ordered = sorted(values)
     if not ordered:
-        return {"n": 0, "p50": None, "p95": None, "p99": None, "max": None}
+        return {
+            "n": 0,
+            "p50": None,
+            "p75": None,
+            "p95": None,
+            "p99": None,
+            "max": None,
+        }
 
     def percentile(fraction: float) -> float:
         position = (len(ordered) - 1) * fraction
@@ -31,6 +39,7 @@ def distribution(values: list[float]) -> dict[str, float | int | None]:
     return {
         "n": len(ordered),
         "p50": percentile(0.5),
+        "p75": percentile(0.75),
         "p95": percentile(0.95),
         "p99": percentile(0.99),
         "max": ordered[-1],
@@ -130,6 +139,19 @@ def session_metrics(
         current[0] - previous[0]
         for previous, current in zip(audio_packets, audio_packets[1:])
     ]
+    gap_excess = [
+        max(0.0, current[0] - previous[0] - previous[1])
+        for previous, current in zip(audio_packets, audio_packets[1:])
+    ]
+    output_drift: list[float] = []
+    if audio_packets:
+        ideal_arrival_s = audio_packets[0][0]
+        for arrival_s, duration_s in audio_packets:
+            output_drift.append(arrival_s - ideal_arrival_s)
+            ideal_arrival_s += duration_s
+    else:
+        pass
+    late_send_count = sum(value > LATE_SEND_THRESHOLD_S for value in lateness)
     underrun_count, underrun_total_s, underrun_worst_s = (
         playback_underruns(
             audio_packets, start_s + input_duration_s + reserve_s, reserve_s
@@ -141,6 +163,7 @@ def session_metrics(
     )
     return {
         "session_id": session_id,
+        "input_duration_s": input_duration_s,
         "trace_file": str(trace_path),
         "receipts_file": str(trace_path.with_name(SEND_RECEIPTS_FILE)),
         "success": not errors,
@@ -151,9 +174,16 @@ def session_metrics(
             else None
         ),
         "send_lateness_s": distribution(lateness),
+        "late_send_count": late_send_count,
+        "late_send_rate": late_send_count / len(lateness) if lateness else None,
         "output_gap_s": distribution(gaps),
+        "output_gap_excess_s": distribution(gap_excess),
+        "output_drift_s": distribution(output_drift),
+        "final_output_drift_s": output_drift[-1] if output_drift else None,
         "send_lateness_values_s": lateness,
         "output_gap_values_s": gaps,
+        "output_gap_excess_values_s": gap_excess,
+        "output_drift_values_s": output_drift,
         "output_samples": output_samples,
         "output_duration_s": output_samples / PROFILES[profile].output_sample_rate,
         "output_coverage": output_samples
@@ -162,10 +192,14 @@ def session_metrics(
         "underrun_count": underrun_count,
         "underrun_total_s": underrun_total_s,
         "underrun_worst_s": underrun_worst_s,
+        "underrun_ratio": underrun_total_s / input_duration_s,
     }
 
 
 def aggregate_sessions(sessions: list[dict[str, JsonValue]]) -> dict[str, JsonValue]:
+    send_count = sum(len(s["send_lateness_values_s"]) for s in sessions)
+    late_send_count = sum(s["late_send_count"] for s in sessions)
+    underrun_total_s = sum(s["underrun_total_s"] for s in sessions)
     return {
         "attempted_sessions": len(sessions),
         "successful_sessions": sum(bool(s["success"]) for s in sessions),
@@ -175,12 +209,30 @@ def aggregate_sessions(sessions: list[dict[str, JsonValue]]) -> dict[str, JsonVa
         "send_lateness_s": distribution(
             [value for s in sessions for value in s["send_lateness_values_s"]]
         ),
+        "late_send_threshold_s": LATE_SEND_THRESHOLD_S,
+        "late_send_count": late_send_count,
+        "late_send_rate": late_send_count / send_count if send_count else None,
         "output_gap_s": distribution(
             [value for s in sessions for value in s["output_gap_values_s"]]
+        ),
+        "output_gap_excess_s": distribution(
+            [value for s in sessions for value in s["output_gap_excess_values_s"]]
+        ),
+        "output_drift_s": distribution(
+            [value for s in sessions for value in s["output_drift_values_s"]]
+        ),
+        "final_output_drift_s": distribution(
+            [
+                s["final_output_drift_s"]
+                for s in sessions
+                if s["final_output_drift_s"] is not None
+            ]
         ),
         "output_coverage": distribution([s["output_coverage"] for s in sessions]),
         "underrun_sessions": sum(bool(s["underrun_count"]) for s in sessions),
         "underrun_count": sum(s["underrun_count"] for s in sessions),
-        "underrun_total_s": sum(s["underrun_total_s"] for s in sessions),
+        "underrun_total_s": underrun_total_s,
         "underrun_worst_s": max((s["underrun_worst_s"] for s in sessions), default=0.0),
+        "underrun_ratio": underrun_total_s
+        / sum(s["input_duration_s"] for s in sessions),
     }
