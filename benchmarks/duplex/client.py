@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import queue
 import time
 import uuid
 from pathlib import Path
@@ -27,6 +28,12 @@ ADMISSION_DENIED_STATUS = 503
 ADMISSION_RETRIES = 3
 ADMISSION_BACKOFF_S = 0.25
 SEND_RECEIPTS_FILE = "input-send-receipts.json"
+
+
+class AdmissionRejected(RuntimeError):
+    """The bounded handshake retry exhausted server admission capacity."""
+
+
 # note (wenyao): Keepalive and compression would perturb packet timing.
 TRANSPORT: dict[str, JsonValue] = {
     "max_message_bytes": MAX_MESSAGE_BYTES,
@@ -81,7 +88,19 @@ async def run_session(
 
     receipts: list[SendReceipt] = []
     session_start_s: float | None = None
+    admitted = False
     with trace_path.open("x", encoding="utf-8", buffering=1) as trace_file:
+        trace_queue: queue.Queue[dict[str, JsonValue] | None] = queue.Queue()
+
+        def write_trace() -> None:
+            while True:
+                observation = trace_queue.get()
+                if observation is None:
+                    return
+                else:
+                    trace_file.write(json.dumps(observation, allow_nan=False) + "\n")
+
+        writer = asyncio.create_task(asyncio.to_thread(write_trace))
 
         def record(
             direction: Literal["send", "receive", "error", "admission"],
@@ -92,38 +111,32 @@ async def run_session(
                 observed_time_s = time.perf_counter()
             else:
                 pass
-            trace_file.write(
-                json.dumps(
-                    {
-                        "direction": direction,
-                        "time_s": observed_time_s,
-                        "event": event,
-                    },
-                    allow_nan=False,
-                )
-                + "\n"
+            trace_queue.put(
+                {
+                    "direction": direction,
+                    "time_s": observed_time_s,
+                    "event": event,
+                }
             )
             return observed_time_s
 
         async def admit() -> websockets.ClientConnection:
+            nonlocal admitted
             attempt = 0
             while True:
                 attempt += 1
                 try:
-                    return await websockets.connect(
+                    connection = await websockets.connect(
                         url,
                         max_size=MAX_MESSAGE_BYTES,
                         compression=None,
                         ping_interval=None,
                     )
+                    admitted = True
+                    return connection
                 except websockets.InvalidStatus as exc:
                     if exc.response.status_code != ADMISSION_DENIED_STATUS:
                         raise
-                    elif attempt > ADMISSION_RETRIES:
-                        raise RuntimeError(
-                            f"admission denied {attempt} times with HTTP "
-                            f"{ADMISSION_DENIED_STATUS}"
-                        ) from exc
                     else:
                         record(
                             "admission",
@@ -131,9 +144,20 @@ async def run_session(
                                 "type": "connection_denied",
                                 "http_status": exc.response.status_code,
                                 "attempt": attempt,
+                                **(
+                                    {"exhausted": True}
+                                    if attempt > ADMISSION_RETRIES
+                                    else {}
+                                ),
                             },
                         )
-                        await asyncio.sleep(ADMISSION_BACKOFF_S)
+                        if attempt > ADMISSION_RETRIES:
+                            raise AdmissionRejected(
+                                f"admission denied {attempt} times with HTTP "
+                                f"{ADMISSION_DENIED_STATUS}"
+                            ) from exc
+                        else:
+                            await asyncio.sleep(ADMISSION_BACKOFF_S)
 
         async def exchange() -> None:
             async with await admit() as websocket:
@@ -171,8 +195,11 @@ async def run_session(
                         event["sglang"] = sglang
                     else:
                         pass
-                    send_started_s = record("send", event)
-                    await websocket.send(json.dumps(event))
+                    frame = json.dumps(event)
+                    send_started_s = time.perf_counter()
+                    record("send", event, send_started_s)
+                    await websocket.send(frame)
+                    send_completed_s = time.perf_counter()
                     if event_type == "input_audio_buffer.append":
                         assert sglang is not None
                         assert scheduled_s is not None
@@ -182,7 +209,7 @@ async def run_session(
                                 "seq": sglang["seq"],
                                 "scheduled_s": scheduled_s,
                                 "start_s": send_started_s,
-                                "completed_s": time.perf_counter(),
+                                "completed_s": send_completed_s,
                             }
                         )
                     else:
@@ -207,7 +234,11 @@ async def run_session(
                     async for frame in websocket:
                         received_time_s = time.perf_counter()
                         try:
-                            event = json.loads(frame)
+
+                            def reject_constant(value: str) -> None:
+                                raise ValueError(f"nonfinite JSON number: {value}")
+
+                            event = json.loads(frame, parse_constant=reject_constant)
                             if not isinstance(event, dict):
                                 raise ValueError("server event must be a JSON object")
                             else:
@@ -350,6 +381,8 @@ async def run_session(
             await asyncio.wait_for(exchange(), timeout=timeout_s)
         except asyncio.TimeoutError:
             record("error", {"message": f"Session timeout after {timeout_s}s"})
+        except AdmissionRejected:
+            pass
         except (
             OSError,
             websockets.WebSocketException,
@@ -362,12 +395,22 @@ async def run_session(
                 ready.set_result(False)
             else:
                 pass
-            trace_path.with_name(SEND_RECEIPTS_FILE).write_text(
-                json.dumps(
-                    {"session_start_s": session_start_s, "appends": receipts},
-                    indent=2,
-                    allow_nan=False,
+            trace_queue.put(None)
+            await writer
+
+            def write_receipts() -> None:
+                trace_path.with_name(SEND_RECEIPTS_FILE).write_text(
+                    json.dumps(
+                        {
+                            "session_start_s": session_start_s,
+                            "admitted": admitted,
+                            "appends": receipts,
+                        },
+                        indent=2,
+                        allow_nan=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
                 )
-                + "\n",
-                encoding="utf-8",
-            )
+
+            await asyncio.to_thread(write_receipts)

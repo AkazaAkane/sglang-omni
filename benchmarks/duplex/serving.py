@@ -16,11 +16,12 @@ from pydantic import JsonValue
 from benchmarks.duplex.client import SAMPLE_RATE, run_session
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName
 from benchmarks.duplex.serving_metrics import (
-    aggregate_sessions,
+    LATE_SEND_THRESHOLD_S,
     distribution,
     empty_session_metrics,
     session_metrics,
 )
+from benchmarks.duplex.serving_summary import aggregate_sessions
 from benchmarks.duplex.v15_audio import normalize_audio
 from benchmarks.runtime_metrics import ResourceMonitor, collect_benchmark_provenance
 
@@ -46,8 +47,6 @@ async def run_concurrency(
         raise ValueError("concurrency must be positive")
     if not pcm or len(pcm) % 2:
         raise ValueError("input must be nonempty PCM16")
-    if not PROFILES[profile].continuous_output:
-        raise ValueError(f"profile {profile} does not produce continuous output")
     if stagger_s < 0 or loop_lag_limit_s <= 0:
         raise ValueError("stagger must be nonnegative and loop lag limit positive")
     output_dir.mkdir(parents=True, exist_ok=False)
@@ -108,7 +107,7 @@ async def run_concurrency(
                 reserve_s=reserve_s,
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            session = empty_session_metrics(trace_path, session_id, duration_s)
+            session = empty_session_metrics(trace_path, session_id, duration_s, profile)
             session["errors"].append(f"unreadable session artifacts: {exc}")
         if isinstance(result, BaseException):
             session["success"] = False
@@ -126,8 +125,16 @@ async def run_concurrency(
         "aggregate": aggregate_sessions(sessions),
         "loop_lag_s": distribution(loop_lags_s),
         "loop_lag_limit_s": loop_lag_limit_s,
+        "send_lateness_limit_s": LATE_SEND_THRESHOLD_S,
         "client_timing_valid": bool(loop_lags_s)
-        and distribution(loop_lags_s)["p99"] <= loop_lag_limit_s,
+        and distribution(loop_lags_s)["p99"] <= loop_lag_limit_s
+        and all(
+            session["send_lateness_s"]["p99"] is not None
+            and session["send_lateness_s"]["p99"] <= LATE_SEND_THRESHOLD_S
+            for session in sessions
+            if session["admitted"]
+        )
+        and any(session["admitted"] for session in sessions),
     }
     (output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, allow_nan=False) + "\n", encoding="utf-8"
@@ -146,9 +153,11 @@ def format_percent(value: float | None) -> str:
 def print_summary(summary: dict[str, JsonValue]) -> None:
     aggregate = summary["aggregate"]
     print(
-        f"Concurrency: {summary['concurrency']}  "
+        f"Model: {summary['profile']}  Concurrency: {summary['concurrency']}  "
         f"Duration: {summary['input_duration_s']:.2f}s  "
-        f"Sessions: {aggregate['successful_sessions']}/{aggregate['attempted_sessions']}"
+        f"Admitted: {aggregate['admitted_sessions']}/{aggregate['attempted_sessions']}  "
+        f"Rejected: {aggregate['rejected_sessions']}  "
+        f"Success: {aggregate['successful_admitted_sessions']}/{aggregate['admitted_sessions']} admitted"
     )
     print(
         f"Loop lag p99: {format_ms(summary['loop_lag_s']['p99'])}ms "
@@ -157,7 +166,12 @@ def print_summary(summary: dict[str, JsonValue]) -> None:
     )
     print(f"{'Metric':22} {'p50':>9} {'p75':>9} {'p95':>9} {'p99':>9} {'max':>9}")
     for label, name in (
-        ("TTFA (ms)", "ttfa_s"),
+        ("Unit lag (ms)", "unit_lag_s"),
+        ("Response TTFA (ms)", "response_ttfa_s"),
+        ("Response gap excess", "response_gap_excess_s"),
+        ("Response max drift", "response_max_drift_s"),
+        ("Response buffer (ms)", "response_required_playout_buffer_s"),
+        ("Session TTFA (ms)", "ttfa_s"),
         ("Send lateness (ms)", "send_lateness_s"),
         ("Output gap (ms)", "output_gap_s"),
         ("Gap excess (ms)", "output_gap_excess_s"),
@@ -174,7 +188,7 @@ def print_summary(summary: dict[str, JsonValue]) -> None:
             f"n={values['n']}"
         )
     coverage = aggregate["output_coverage"]["p50"]
-    print(f"Output coverage p50: {coverage * 100:.1f}%")
+    print(f"Output coverage p50: {format_percent(coverage)}")
     print(
         f"Late sends (>{aggregate['late_send_threshold_s'] * 1000:.0f}ms): "
         f"{aggregate['late_send_count']}/{aggregate['send_lateness_s']['n']} "
@@ -192,11 +206,11 @@ def print_summary(summary: dict[str, JsonValue]) -> None:
         f"(n={aggregate['required_playout_buffer_s']['n']})"
     )
     print(
-        f"Underrun sessions: {aggregate['underrun_sessions']}/"
-        f"{aggregate['attempted_sessions']}  "
-        f"Count: {aggregate['underrun_count']}  "
-        f"Total/max: {aggregate['underrun_total_s'] * 1000:.1f}/"
-        f"{aggregate['underrun_worst_s'] * 1000:.1f}ms  "
+        f"Underrun sessions: {aggregate['underrun_sessions'] if aggregate['underrun_sessions'] is not None else '-'}/"
+        f"{aggregate['playout_sessions']}  "
+        f"Count: {aggregate['underrun_count'] if aggregate['underrun_count'] is not None else '-'}  "
+        f"Total/max: {format_ms(aggregate['underrun_total_s'])}/"
+        f"{format_ms(aggregate['underrun_worst_s'])}ms  "
         f"Ratio: {format_percent(aggregate['underrun_ratio'])}"
     )
 
@@ -244,8 +258,6 @@ def main() -> None:
         parser.error("--gpu-index must be nonnegative")
     if args.gpu_process_pid and any(pid <= 0 for pid in args.gpu_process_pid):
         parser.error("--gpu-process-pid must be positive")
-    if not PROFILES[profile].continuous_output:
-        parser.error(f"profile {profile} does not produce continuous output")
     server_config = {}
     if args.server_config is not None:
         server_config = json.loads(args.server_config.read_text(encoding="utf-8"))
@@ -322,6 +334,11 @@ def main() -> None:
                 for run in summaries
                 if run["concurrency"] == level
             ),
+            "loop_lag_p99_s": max(
+                run["loop_lag_s"]["p99"]
+                for run in summaries
+                if run["concurrency"] == level
+            ),
             "aggregate": aggregate_sessions(
                 [
                     session
@@ -351,20 +368,25 @@ def main() -> None:
         print_summary(summaries[0])
     else:
         print(
-            "C  repeats  success  TTFA p95(n)  gap p99(n)  coverage p50(n)  "
-            "late sends  buffer p95(n)  loop valid  underrun sessions  underrun ratio"
+            "Model  C  repeats  admitted/attempted  success/admitted  unit lag p95(n)  "
+            "response TTFA p95(n)  response gap-excess p99(n)  session TTFA p95(n)  coverage p50(n)  "
+            "send lateness p95/p99(ms)  loop lag p99(ms)  "
+            "late sends  buffer p95(n)  client timing valid  underrun sessions  underrun ratio"
         )
         for summary in level_summaries:
             aggregate = summary["aggregate"]
-            underrun_sessions = (
-                f"{aggregate['underrun_sessions']}/{aggregate['attempted_sessions']}"
-            )
+            underrun_sessions = f"{aggregate['underrun_sessions'] if aggregate['underrun_sessions'] is not None else '-'}/{aggregate['playout_sessions']}"
             print(
-                f"{summary['concurrency']:<2} {summary['repeats']:<7} "
-                f"{aggregate['successful_sessions']}/{aggregate['attempted_sessions']:<7} "
+                f"{profile} {summary['concurrency']:<2} {summary['repeats']:<7} "
+                f"{aggregate['admitted_sessions']}/{aggregate['attempted_sessions']} "
+                f"{aggregate['successful_admitted_sessions']}/{aggregate['admitted_sessions']} "
+                f"{format_ms(aggregate['unit_lag_s']['p95'])}({aggregate['unit_lag_s']['n']}) "
+                f"{format_ms(aggregate['response_ttfa_s']['p95'])}({aggregate['response_ttfa_s']['n']}) "
+                f"{format_ms(aggregate['response_gap_excess_s']['p99'])}({aggregate['response_gap_excess_s']['n']}) "
                 f"{format_ms(aggregate['ttfa_s']['p95'])}({aggregate['ttfa_s']['n']}) "
-                f"{format_ms(aggregate['output_gap_s']['p99'])}({aggregate['output_gap_s']['n']}) "
-                f"{aggregate['output_coverage']['p50'] * 100:.1f}%({aggregate['output_coverage']['n']}) "
+                f"{format_percent(aggregate['output_coverage']['p50'])}({aggregate['output_coverage']['n']}) "
+                f"{format_ms(aggregate['send_lateness_s']['p95'])}/{format_ms(aggregate['send_lateness_s']['p99'])} "
+                f"{format_ms(summary['loop_lag_p99_s'])} "
                 f"{format_percent(aggregate['late_send_rate']):>11} "
                 f"{format_ms(aggregate['required_playout_buffer_s']['p95'])}"
                 f"({aggregate['required_playout_buffer_s']['n']}) "

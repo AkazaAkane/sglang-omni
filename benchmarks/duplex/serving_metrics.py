@@ -7,6 +7,7 @@ import base64
 import binascii
 import json
 import math
+import re
 from pathlib import Path
 
 from pydantic import JsonValue
@@ -72,22 +73,38 @@ def playback_underruns(
 
 
 def empty_session_metrics(
-    trace_path: Path, session_id: str, input_duration_s: float
+    trace_path: Path, session_id: str, input_duration_s: float, profile: ProfileName
 ) -> dict[str, JsonValue]:
+    continuous = PROFILES[profile].continuous_output
     return {
         "session_id": session_id,
         "input_duration_s": input_duration_s,
         "trace_file": str(trace_path),
         "receipts_file": str(trace_path.with_name(SEND_RECEIPTS_FILE)),
         "success": False,
+        "admitted": False,
+        "status": "failed",
         "errors": [],
         "ttfa_s": None,
+        "session_ttfa_s": None,
+        "unit_lag_s": distribution([]),
+        "unit_lag_values_s": [],
+        "excluded_terminal_units": [],
+        "response_ttfa_s": distribution([]),
+        "response_ttfa_values_s": [],
+        "response_gap_excess_s": distribution([]),
+        "response_gap_excess_values_s": [],
+        "response_max_drift_s": distribution([]),
+        "response_max_drift_values_s": [],
+        "response_required_playout_buffer_s": distribution([]),
+        "response_required_playout_buffer_values_s": [],
+        "responses": [],
         "send_lateness_s": distribution([]),
         "late_send_count": 0,
         "late_send_rate": None,
-        "output_gap_s": distribution([]),
-        "output_gap_excess_s": distribution([]),
-        "output_drift_s": distribution([]),
+        "output_gap_s": distribution([]) if continuous else None,
+        "output_gap_excess_s": distribution([]) if continuous else None,
+        "output_drift_s": distribution([]) if continuous else None,
         "final_output_drift_s": None,
         "required_playout_buffer_s": None,
         "media_schedule_lag_s": distribution([]),
@@ -100,11 +117,11 @@ def empty_session_metrics(
         "media_send_lag_values_s": [],
         "output_samples": 0,
         "output_duration_s": 0.0,
-        "output_coverage": 0.0,
-        "underrun_count": 1,
-        "underrun_total_s": input_duration_s,
-        "underrun_worst_s": input_duration_s,
-        "underrun_ratio": 1.0,
+        "output_coverage": 0.0 if continuous else None,
+        "underrun_count": 1 if continuous else None,
+        "underrun_total_s": input_duration_s if continuous else None,
+        "underrun_worst_s": input_duration_s if continuous else None,
+        "underrun_ratio": 1.0 if continuous else None,
     }
 
 
@@ -122,6 +139,33 @@ def session_metrics(
     )
     start_s = receipts["session_start_s"]
     appends = receipts["appends"]
+    metrics = empty_session_metrics(trace_path, session_id, input_duration_s, profile)
+    admitted = receipts.get("admitted", False) or any(
+        record["direction"] == "receive"
+        or (
+            record["direction"] == "admission"
+            and record["event"].get("type") == "connection_admitted"
+        )
+        for record in records
+    )
+    rejected = not admitted and any(
+        record["direction"] == "admission"
+        and record["event"].get("http_status") == 503
+        and record["event"].get("exhausted")
+        for record in records
+    )
+    metrics["admitted"] = admitted
+    if rejected:
+        metrics["status"] = "rejected"
+        return metrics
+    else:
+        pass
+    native_unit_s = PROFILES[profile].native_unit_ms / 1000
+    full_units = math.floor((input_duration_s + PLAYBACK_EPSILON_S) / native_unit_s)
+    unit_lags: dict[str, float] = {}
+    terminal_units: list[str] = []
+    response_created_s: dict[str, float] = {}
+    response_audio: dict[str, list[tuple[float, float]]] = {}
     append_by_media_ms = {
         round(append["seq"] * PACKET_BYTES / (2 * SAMPLE_RATE) * 1000, 3): append
         for append in appends
@@ -141,7 +185,29 @@ def session_metrics(
             errors.append(str(event.get("message", "client error")))
         elif direction == "receive":
             event_types.append(event_type)
-            if event_type == "error":
+            if event_type == "sglang.unit.done":
+                unit_id = event.get("unit_id")
+                match = re.fullmatch(r"unit_(\d+)", unit_id or "")
+                if match is None:
+                    errors.append(f"invalid completed unit id: {unit_id}")
+                elif int(match[1]) >= full_units:
+                    terminal_units.append(unit_id)
+                elif start_s is not None:
+                    unit_lags.setdefault(
+                        unit_id,
+                        record["time_s"]
+                        - (start_s + (int(match[1]) + 1) * native_unit_s),
+                    )
+                else:
+                    pass
+            elif event_type == "response.created":
+                response = event.get("response", {})
+                response_id = response.get("id")
+                if isinstance(response_id, str):
+                    response_created_s.setdefault(response_id, record["time_s"])
+                else:
+                    errors.append("response.created missing response id")
+            elif event_type == "error":
                 errors.append(str(event.get("error", "server error")))
             elif event_type == "response.done":
                 response = event.get("response")
@@ -163,6 +229,13 @@ def session_metrics(
                     duration_s = len(pcm) / (2 * PROFILES[profile].output_sample_rate)
                     output_samples += len(pcm) // 2
                     audio_packets.append((record["time_s"], duration_s))
+                    response_id = event.get("response_id")
+                    if isinstance(response_id, str):
+                        response_audio.setdefault(response_id, []).append(
+                            (record["time_s"], duration_s)
+                        )
+                    else:
+                        pass
                     extension = event.get("sglang")
                     media_time = (
                         extension.get("media_time")
@@ -191,23 +264,25 @@ def session_metrics(
         errors.append("session did not close")
     if audio_packets and "response.done" not in event_types:
         errors.append("output response did not complete")
-    if not audio_packets:
+    if not audio_packets and PROFILES[profile].continuous_output:
         errors.append("no output audio")
     if start_s is None:
         errors.append("session did not start")
     lateness = [max(0.0, r["start_s"] - r["scheduled_s"]) for r in appends]
+    continuous = PROFILES[profile].continuous_output
+    playout_packets = audio_packets if continuous else []
     gaps = [
         current[0] - previous[0]
-        for previous, current in zip(audio_packets, audio_packets[1:])
+        for previous, current in zip(playout_packets, playout_packets[1:])
     ]
     gap_excess = [
         max(0.0, current[0] - previous[0] - previous[1])
-        for previous, current in zip(audio_packets, audio_packets[1:])
+        for previous, current in zip(playout_packets, playout_packets[1:])
     ]
     output_drift: list[float] = []
-    if audio_packets:
-        ideal_arrival_s = audio_packets[0][0]
-        for arrival_s, duration_s in audio_packets:
+    if playout_packets:
+        ideal_arrival_s = playout_packets[0][0]
+        for arrival_s, duration_s in playout_packets:
             output_drift.append(arrival_s - ideal_arrival_s)
             ideal_arrival_s += duration_s
     else:
@@ -217,19 +292,20 @@ def session_metrics(
         playback_underruns(
             audio_packets, start_s + input_duration_s + reserve_s, reserve_s
         )
-        if audio_packets
+        if continuous
+        and audio_packets
         and start_s is not None
         and audio_packets[0][0] < start_s + input_duration_s
         else (1, input_duration_s, input_duration_s)
     )
-    metrics = empty_session_metrics(trace_path, session_id, input_duration_s)
     metrics.update(
         {
             "success": not errors,
+            "status": "succeeded" if not errors else "failed",
             "errors": errors,
             "ttfa_s": (
                 audio_packets[0][0] - start_s
-                if audio_packets and start_s is not None
+                if continuous and audio_packets and start_s is not None
                 else None
             ),
             "send_lateness_s": distribution(lateness),
@@ -252,68 +328,79 @@ def session_metrics(
             "media_send_lag_values_s": media_send_lag,
             "output_samples": output_samples,
             "output_duration_s": output_samples / PROFILES[profile].output_sample_rate,
-            "output_coverage": output_samples
-            / PROFILES[profile].output_sample_rate
-            / input_duration_s,
+            "output_coverage": (
+                output_samples / PROFILES[profile].output_sample_rate / input_duration_s
+                if continuous
+                else None
+            ),
             "underrun_count": underrun_count,
             "underrun_total_s": underrun_total_s,
             "underrun_worst_s": underrun_worst_s,
             "underrun_ratio": underrun_total_s / input_duration_s,
         }
     )
-    return metrics
-
-
-def aggregate_sessions(sessions: list[dict[str, JsonValue]]) -> dict[str, JsonValue]:
-    send_count = sum(len(s["send_lateness_values_s"]) for s in sessions)
-    late_send_count = sum(s["late_send_count"] for s in sessions)
-    underrun_total_s = sum(s["underrun_total_s"] for s in sessions)
-    return {
-        "attempted_sessions": len(sessions),
-        "successful_sessions": sum(bool(s["success"]) for s in sessions),
-        "ttfa_s": distribution(
-            [s["ttfa_s"] for s in sessions if s["ttfa_s"] is not None]
-        ),
-        "send_lateness_s": distribution(
-            [value for s in sessions for value in s["send_lateness_values_s"]]
-        ),
-        "late_send_threshold_s": LATE_SEND_THRESHOLD_S,
-        "late_send_count": late_send_count,
-        "late_send_rate": late_send_count / send_count if send_count else None,
-        "output_gap_s": distribution(
-            [value for s in sessions for value in s["output_gap_values_s"]]
-        ),
-        "output_gap_excess_s": distribution(
-            [value for s in sessions for value in s["output_gap_excess_values_s"]]
-        ),
-        "output_drift_s": distribution(
-            [value for s in sessions for value in s["output_drift_values_s"]]
-        ),
-        "final_output_drift_s": distribution(
-            [
-                s["final_output_drift_s"]
-                for s in sessions
-                if s["final_output_drift_s"] is not None
-            ]
-        ),
-        "required_playout_buffer_s": distribution(
-            [
-                s["required_playout_buffer_s"]
-                for s in sessions
-                if s["required_playout_buffer_s"] is not None
-            ]
-        ),
-        "media_schedule_lag_s": distribution(
-            [value for s in sessions for value in s["media_schedule_lag_values_s"]]
-        ),
-        "media_send_lag_s": distribution(
-            [value for s in sessions for value in s["media_send_lag_values_s"]]
-        ),
-        "output_coverage": distribution([s["output_coverage"] for s in sessions]),
-        "underrun_sessions": sum(bool(s["underrun_count"]) for s in sessions),
-        "underrun_count": sum(s["underrun_count"] for s in sessions),
-        "underrun_total_s": underrun_total_s,
-        "underrun_worst_s": max((s["underrun_worst_s"] for s in sessions), default=0.0),
-        "underrun_ratio": underrun_total_s
-        / sum(s["input_duration_s"] for s in sessions),
+    metrics["session_ttfa_s"] = metrics["ttfa_s"]
+    response_timings = []
+    for response_id, packets in response_audio.items():
+        created_s = response_created_s.get(response_id)
+        response_gaps = [
+            max(0.0, current[0] - previous[0] - previous[1])
+            for previous, current in zip(packets, packets[1:])
+        ]
+        ideal_s = packets[0][0]
+        drifts = []
+        for arrival_s, duration_s in packets:
+            drifts.append(arrival_s - ideal_s)
+            ideal_s += duration_s
+        response_timings.append(
+            {
+                "response_id": response_id,
+                "ttfa_s": packets[0][0] - created_s if created_s is not None else None,
+                "gap_excess_values_s": response_gaps,
+                "max_drift_s": max(drifts),
+                "required_playout_buffer_s": max(0.0, max(drifts)),
+            }
+        )
+    common_values = {
+        "unit_lag": list(unit_lags.values()),
+        "response_ttfa": [
+            r["ttfa_s"] for r in response_timings if r["ttfa_s"] is not None
+        ],
+        "response_gap_excess": [
+            v for r in response_timings for v in r["gap_excess_values_s"]
+        ],
+        "response_max_drift": [r["max_drift_s"] for r in response_timings],
+        "response_required_playout_buffer": [
+            r["required_playout_buffer_s"] for r in response_timings
+        ],
     }
+    for name, values in common_values.items():
+        metrics[f"{name}_values_s"] = values
+        metrics[f"{name}_s"] = distribution(values)
+    metrics["excluded_terminal_units"] = terminal_units
+    metrics["responses"] = response_timings
+    if not PROFILES[profile].continuous_output:
+        for name in (
+            "ttfa_s",
+            "session_ttfa_s",
+            "output_gap_s",
+            "output_gap_excess_s",
+            "output_drift_s",
+            "final_output_drift_s",
+            "required_playout_buffer_s",
+            "output_coverage",
+            "underrun_count",
+            "underrun_total_s",
+            "underrun_worst_s",
+            "underrun_ratio",
+        ):
+            metrics[name] = None
+        for name in (
+            "output_gap_values_s",
+            "output_gap_excess_values_s",
+            "output_drift_values_s",
+        ):
+            metrics[name] = []
+    else:
+        pass
+    return metrics

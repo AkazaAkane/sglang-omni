@@ -10,11 +10,13 @@ import sys
 import time
 import wave
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import websockets
 from pydantic import JsonValue
 from websockets.asyncio.server import ServerConnection
+from websockets.http11 import Request, Response
 
 from benchmarks.duplex.client import (
     PACKET_BYTES,
@@ -22,13 +24,14 @@ from benchmarks.duplex.client import (
     run_session,
     scheduled_send_s,
 )
-from benchmarks.duplex.profiles import DEFAULT_PROFILE
-from benchmarks.duplex.serving import run_concurrency
+from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName
+from benchmarks.duplex.serving import print_summary, run_concurrency
 from benchmarks.duplex.serving_metrics import (
-    aggregate_sessions,
     distribution,
+    empty_session_metrics,
     session_metrics,
 )
+from benchmarks.duplex.serving_summary import aggregate_sessions
 from tests.unit_test.benchmarks.test_duplex_client import DuplexPeer
 
 INPUT_DURATION_S = 0.32
@@ -238,19 +241,268 @@ def test_late_start_catches_up_to_absolute_schedule(tmp_path: Path) -> None:
     assert appends[-1]["start_s"] - appends[-1]["scheduled_s"] < 0.04
 
 
-def test_serving_rejects_noncontinuous_profile(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="does not produce continuous output"):
-        asyncio.run(
-            run_concurrency(
-                "ws://127.0.0.1:1/v1/realtime",
-                b"\x00\x00" * 1280,
-                concurrency=1,
-                profile="minicpmo-native-pr2377",
-                output_dir=tmp_path / "invalid",
-                timeout_s=1,
+def test_delayed_iteration_preserves_later_deadlines(tmp_path: Path) -> None:
+    original_send = websockets.ClientConnection.send
+
+    async def delayed_send(
+        connection: websockets.ClientConnection, message: str
+    ) -> None:
+        event = json.loads(message)
+        if event["type"] == "input_audio_buffer.append" and event["sglang"]["seq"] == 1:
+            await asyncio.sleep(0.24)
+        else:
+            pass
+        await original_send(connection, message)
+
+    async def run() -> dict[str, JsonValue]:
+        async with websockets.serve(DuplexPeer().handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            with patch.object(websockets.ClientConnection, "send", delayed_send):
+                await run_session(
+                    f"ws://127.0.0.1:{port}/v1/realtime",
+                    b"\x00\x00" * (6 * PACKET_BYTES // 2),
+                    scenario="continuous",
+                    trace_path=tmp_path / "trace.jsonl",
+                )
+        return json.loads((tmp_path / SEND_RECEIPTS_FILE).read_text())
+
+    receipts = asyncio.run(run())
+    appends = receipts["appends"]
+    assert [r["scheduled_s"] for r in appends] == pytest.approx(
+        [receipts["session_start_s"] + index * 0.08 for index in range(6)]
+    )
+    assert appends[2]["start_s"] - appends[2]["scheduled_s"] >= 0.15
+    assert appends[3]["start_s"] - appends[2]["start_s"] < 0.04
+
+
+@pytest.mark.parametrize("profile", list(PROFILES))
+def test_capacity_two_admission(tmp_path: Path, profile: ProfileName) -> None:
+    async def run() -> dict[str, JsonValue]:
+        active = 0
+
+        def admit(connection: ServerConnection, request: Request) -> Response | None:
+            nonlocal active
+            if active >= 2:
+                return connection.respond(503, "connection capacity exhausted")
+            else:
+                active += 1
+                return None
+
+        async def handler(websocket: ServerConnection) -> None:
+            nonlocal active
+            try:
+                await DuplexPeer().handler(websocket)
+            finally:
+                active -= 1
+
+        async with websockets.serve(
+            handler, "127.0.0.1", 0, process_request=admit
+        ) as server:
+            port = server.sockets[0].getsockname()[1]
+            summary = await run_concurrency(
+                f"ws://127.0.0.1:{port}/v1/realtime",
+                b"\x00\x00" * (4 * PACKET_BYTES // 2),
+                concurrency=4,
+                profile=profile,
+                output_dir=tmp_path / "c4",
+                timeout_s=5,
                 reserve_s=0.08,
             )
+            assert active == 0
+            next_level = await run_concurrency(
+                f"ws://127.0.0.1:{port}/v1/realtime",
+                b"\x00\x00" * (4 * PACKET_BYTES // 2),
+                concurrency=2,
+                profile=profile,
+                output_dir=tmp_path / "c2",
+                timeout_s=5,
+                reserve_s=0.08,
+            )
+            assert next_level["aggregate"]["admitted_sessions"] == 2
+            return summary
+
+    summary = asyncio.run(run())
+    aggregate = summary["aggregate"]
+    assert aggregate["attempted_sessions"] == 4
+    assert aggregate["admitted_sessions"] == 2
+    assert aggregate["rejected_sessions"] == 2
+    assert aggregate["successful_admitted_sessions"] == 2
+    assert aggregate["output_coverage"]["n"] == (
+        2 if PROFILES[profile].continuous_output else 0
+    )
+    print_summary(summary)
+    for session in summary["sessions"]:
+        assert Path(session["trace_file"]).exists()
+        assert Path(session["receipts_file"]).exists()
+        if session["status"] == "rejected":
+            assert session["admitted"] is False
+            assert session["errors"] == []
+            trace = Path(session["trace_file"]).read_text()
+            assert '"exhausted": true' in trace
+        else:
+            assert session["success"] is True
+
+
+@pytest.mark.parametrize("profile", list(PROFILES))
+def test_native_unit_and_response_metrics(tmp_path: Path, profile: ProfileName) -> None:
+    native_s = PROFILES[profile].native_unit_ms / 1000
+    input_duration_s = 2.2 * native_s
+    trace_path = tmp_path / "trace.jsonl"
+    events = [
+        (10.0, {"type": "session.created"}),
+        (10.0, {"type": "response.created", "response": {"id": "r0"}}),
+        (
+            10.01,
+            {
+                "type": "response.output_text.delta",
+                "response_id": "r0",
+                "delta": "hello",
+            },
+        ),
+        (10 + native_s + 0.03, {"type": "sglang.unit.done", "unit_id": "unit_0"}),
+        (10 + 2 * native_s + 0.07, {"type": "sglang.unit.done", "unit_id": "unit_1"}),
+        (
+            10 + input_duration_s + 0.05,
+            {"type": "sglang.unit.done", "unit_id": "unit_2"},
+        ),
+        (
+            11.0,
+            {"type": "response.done", "response": {"id": "r0", "status": "completed"}},
+        ),
+        (12.0, {"type": "response.created", "response": {"id": "r1"}}),
+        (
+            13.0,
+            {"type": "response.done", "response": {"id": "r1", "status": "completed"}},
+        ),
+        (14.0, {"type": "sglang.input_audio.drained"}),
+        (14.1, {"type": "session.closed"}),
+    ]
+    for response_id, timestamp_s, duration_s in (
+        ("r0", 10.1, 0.2),
+        ("r0", 10.35, 0.3),
+        ("r0", 10.7, 0.1),
+        ("r1", 12.2, 0.1),
+        ("r1", 12.3, 0.1),
+    ):
+        samples = round(duration_s * PROFILES[profile].output_sample_rate)
+        events.append(
+            (
+                timestamp_s,
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": response_id,
+                    "delta": base64.b64encode(b"\x00\x00" * samples).decode("ascii"),
+                },
+            )
         )
+    trace_path.write_text(
+        "".join(
+            json.dumps({"direction": "receive", "time_s": timestamp_s, "event": event})
+            + "\n"
+            for timestamp_s, event in sorted(
+                events, key=lambda observation: observation[0]
+            )
+        )
+    )
+    append_count = round(input_duration_s / 0.08 + 0.499999)
+    trace_path.with_name(SEND_RECEIPTS_FILE).write_text(
+        json.dumps(
+            {
+                "session_start_s": 10.0,
+                "appends": [
+                    {
+                        "seq": index,
+                        "scheduled_s": 10 + index * 0.08,
+                        "start_s": 10 + index * 0.08,
+                    }
+                    for index in range(append_count)
+                ],
+            }
+        )
+    )
+    metrics = session_metrics(
+        trace_path,
+        session_id="s0",
+        input_duration_s=input_duration_s,
+        profile=profile,
+        reserve_s=0.08,
+    )
+    assert metrics["success"] is True
+    assert metrics["unit_lag_values_s"] == pytest.approx([0.03, 0.07])
+    assert metrics["excluded_terminal_units"] == ["unit_2"]
+    assert metrics["response_ttfa_values_s"] == pytest.approx([0.1, 0.2])
+    assert metrics["response_gap_excess_values_s"] == pytest.approx([0.05, 0.05, 0])
+    assert metrics["response_max_drift_values_s"] == pytest.approx([0.1, 0])
+    assert metrics["response_required_playout_buffer_values_s"] == pytest.approx(
+        [0.1, 0]
+    )
+    if not PROFILES[profile].continuous_output:
+        failed = empty_session_metrics(
+            tmp_path / "missing.jsonl", "failed", input_duration_s, profile
+        )
+        failed["admitted"] = True
+        aggregate = aggregate_sessions([metrics, failed])
+        for name in (
+            "ttfa_s",
+            "session_ttfa_s",
+            "output_gap_s",
+            "output_gap_excess_s",
+            "output_drift_s",
+            "output_coverage",
+            "final_output_drift_s",
+            "required_playout_buffer_s",
+            "underrun_count",
+            "underrun_total_s",
+            "underrun_ratio",
+        ):
+            assert metrics[name] is None
+            assert failed[name] is None
+            assert aggregate[name] is None or aggregate[name]["n"] == 0
+    else:
+        assert metrics["ttfa_s"] == pytest.approx(0.1)
+
+
+def test_send_lateness_invalidates_run(tmp_path: Path) -> None:
+    original_metrics = session_metrics
+
+    def late_metrics(
+        trace_path: Path,
+        *,
+        session_id: str,
+        input_duration_s: float,
+        profile: ProfileName,
+        reserve_s: float,
+    ) -> dict[str, JsonValue]:
+        metrics = original_metrics(
+            trace_path,
+            session_id=session_id,
+            input_duration_s=input_duration_s,
+            profile=profile,
+            reserve_s=reserve_s,
+        )
+        metrics["send_lateness_s"] = distribution([0.05])
+        return metrics
+
+    async def run() -> dict[str, JsonValue]:
+        async with websockets.serve(DuplexPeer().handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            with patch(
+                "benchmarks.duplex.serving.session_metrics", side_effect=late_metrics
+            ):
+                return await run_concurrency(
+                    f"ws://127.0.0.1:{port}/v1/realtime",
+                    b"\x00\x00" * (4 * PACKET_BYTES // 2),
+                    concurrency=1,
+                    profile=DEFAULT_PROFILE,
+                    output_dir=tmp_path / "late",
+                    timeout_s=5,
+                    reserve_s=0.08,
+                    loop_lag_limit_s=1.0,
+                )
+
+    summary = asyncio.run(run())
+    assert summary["loop_lag_s"]["p99"] < summary["loop_lag_limit_s"]
+    assert summary["client_timing_valid"] is False
 
 
 def test_coordinator_keeps_failed_session(tmp_path: Path) -> None:

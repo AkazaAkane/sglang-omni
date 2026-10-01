@@ -16,21 +16,54 @@ By default, all configured sessions use one monotonic start deadline and fixed
 subsequent deadlines remain anchored to the original start. Use `--stagger-ms 80`
 to spread session starts evenly across an 80 ms phase. Each session has its own
 JSONL wire trace and input-send-receipts.json; the latter
-records scheduled, send-start, and send-completion times. Failed attempts retain
-their own traces and count toward the requested concurrency.
+records scheduled, send-start, and send-completion times. Trace serialization
+and file writes run on a worker thread; each level awaits trace flush, receipts,
+and the WebSocket close path before starting the next level. Failed and rejected
+attempts retain their own artifacts and count toward attempted concurrency.
 
-The summary reports client send lateness (send start minus deadline), TTFA (first
-audio receipt minus that session's start), gaps between received audio events, and PCM
-output duration divided by input duration. Timing distributions include p50,
-p75, p95, p99 and max, with linear interpolation. Missing TTFA and output timing
-have no samples; missing output has zero coverage and remains in the success
-denominator.
+Both `nemotron-voicechat-pr2188` and `minicpmo-native-pr2377` use this runner.
+Transport packets stay at 80 ms for both; native units are respectively 80 ms
+and 1000 ms. No profile flags are needed beyond `continuous_output`.
+
+The common table emphasizes model, concurrency, admitted/attempted,
+success/admitted, unit lag p95, response TTFA p95 and response gap-excess p99.
+All timing distributions include p50/p75/p95/p99/max with linear interpolation.
+Missing measurements have no samples and display `-`; they never become zero.
+
+Unit lag uses the client receipt timestamp of `sglang.unit.done unit_<k>` minus
+`session_start + (k + 1) * native_unit_ms / 1000`. It includes transport to the
+client. The event is emitted after unit output passes through the runtime/output
+buffer, so it measures **unit fully emitted relative to its native-unit deadline**,
+not pure GPU compute latency. Audio packet indices do not define this metric.
+Only full native units within the unpadded input duration contribute. Terminal
+partial/padded EOS units are retained as `excluded_terminal_units`, since their
+nominal full-unit deadline would make an early EOS flush appear artificially early.
+
+Response TTFA is first `response.output_audio.delta` receipt minus
+`response.created` receipt, grouped by `response_id`. Text before audio contributes
+to this interval. Responses without audio have no TTFA sample. Within each
+response, gap excess is the positive arrival gap minus the preceding packet's
+decoded PCM duration. Drift is arrival minus first arrival minus all earlier PCM
+durations; maximum drift and required buffer (positive maximum drift) are reported
+per response and aggregated across responses. Gaps between response IDs never
+contribute. Raw gaps are unsuitable for comparing MiniCPM-o's one-second bursts
+with VoiceChat output.
 
 Late-send rate is the fraction of sent input frames starting more than 20 ms
 after their deadline. The threshold is a load-generator diagnostic, not a
 server SLO. A 10 ms event-loop ticker records p99 loop lag; runs exceeding
 `--loop-lag-limit-ms` (20 ms by default) are marked `client_timing_valid=false`.
-This measures the benchmark process, not the remote server.
+Additionally, every admitted session must have send receipts and send-lateness
+p99 at most 20 ms. Loop lag p99 and send lateness p95/p99 are reported separately;
+a run without admitted sessions is not timing-valid. These checks measure the
+benchmark process, not the remote server, and prevent late input from being
+silently interpreted as a valid server-capacity measurement.
+
+The following session-wide metrics apply only to `continuous_output=True`
+(VoiceChat): session TTFA, output gap/excess, coverage, continuous/final drift,
+required playout buffer, underrun count/duration/ratio. MiniCPM-o returns `None`
+for all of them, even for failed or rejected sessions; aggregates remain empty
+or N/A. Listening and turn-taking time are not session serving latency.
 
 For consecutive output packets, gap excess is the positive part of the receive
 gap minus the preceding packet's decoded PCM duration. Output drift at packet
@@ -58,7 +91,8 @@ input deadline plus the reserve. Each interval that exhausts the buffer counts
 as an underrun. A session without audio, or whose first audio arrives after the
 input window, is assigned one full-input-duration underrun. Underrun ratio is
 total underrun duration divided by the fixed input observation duration; the
-aggregate ratio includes all attempted sessions, including failures. This does
+aggregate ratio includes admitted continuous-output sessions, including failures,
+and excludes rejected attempts and non-continuous profiles. This does
 not model network jitter, device buffering, or the server's internal stages.
 These observations alone do not establish a sustainable concurrency threshold.
 
@@ -77,8 +111,17 @@ not the remote server SHA. Pass repeatable `--gpu-process-pid` values for
 process-level GPU memory and CPU attribution; these must be host PIDs visible
 to NVML.
 
-The serving benchmark requires continuous output and rejects other profiles.
-The native endpoint documented by #2331 admitted one session at a time and
-returned HTTP 503 for additional connections. Confirm multi-session support
-before interpreting C>1 as a capacity result; admission failures remain in the
-requested-concurrency denominator.
+An exhausted HTTP 503 handshake is `status=rejected`, with `admitted=false`,
+not an admitted failure. Three short 250 ms retries accommodate closing-session
+teardown races; the final denial is explicit in the trace. Summaries report
+attempted, admitted, rejected and successful admitted sessions. Lifecycle checks
+for admitted sessions still require input drain, session close and no protocol
+error; VoiceChat also requires audio. Silence is valid for MiniCPM-o.
+
+For VoiceChat #2188 qualify C1, and treat C2/C4 as admission observations when
+the server limits connections. For MiniCPM-o #2377 use the default
+`examples/full_duplex/minicpmo.yaml` with `max_sessions=2` and run C1/C2/C4.
+C1/C2 measure serving performance; C4 measures admission and should report two
+admitted, two rejected, and success 2/2 admitted when both admitted sessions pass.
+Record the actual server SHA and config using provenance arguments. Do not
+increase admission capacity for qualification.
