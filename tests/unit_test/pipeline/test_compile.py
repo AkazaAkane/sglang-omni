@@ -31,10 +31,16 @@ def test_cpu_thread_plan_counts_final_workers(
         )
         config = PipelineConfig(
             model_path="model",
+            env_defaults={"OMP_NUM_THREADS": "12", "PIPELINE_TEST_ENV": "1"},
             endpoints=EndpointsConfig(base_path=str(tmp_path)),
             stages=[
                 stage("preprocessing", process="preprocessing", next="thinker"),
-                stage("thinker", process="thinker", next="talker"),
+                stage(
+                    "thinker",
+                    process="thinker",
+                    next="talker",
+                    env={"OMP_NUM_THREADS": "6"},
+                ),
                 stage("talker", process="talker", next="code2wav"),
                 stage("code2wav", process="code2wav", terminal=True),
             ],
@@ -59,6 +65,13 @@ def test_cpu_thread_plan_counts_final_workers(
         capacity.assert_called_once_with()
         assert len(process_specs) == process_count
         assert all(spec.cpu_threads == threads for spec in process_specs)
+        for process_spec in process_specs:
+            for stage_spec in process_spec.stage_specs:
+                logical_name = prep.replica_topology.logical_name(stage_spec.stage_name)
+                assert stage_spec.env_defaults == {
+                    "OMP_NUM_THREADS": "6" if logical_name == "thinker" else "12",
+                    "PIPELINE_TEST_ENV": "1",
+                }
 
 
 def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:

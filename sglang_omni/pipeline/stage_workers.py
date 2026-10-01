@@ -227,12 +227,18 @@ def patched_spawn_env(
     ):
         updates["OMP_NUM_THREADS"] = str(spec.cpu_threads)
         updates["SGLANG_OMNI_OMP_FROM_CPU_PLAN"] = "1"
+        omp_source = "cpu_plan_fallback"
     else:
-        pass
+        omp_source = "environment_or_policy"
     backup = {key: os.environ.get(key) for key in updates}
     try:
         for key, value in updates.items():
             os.environ[key] = value
+        logger.info(
+            f"Worker spawn environment: process={spec.process_name} "
+            f"OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS', 'unset')} "
+            f"source={omp_source} fallback_threads={spec.cpu_threads}"
+        )
         yield
     finally:
         for key, value in backup.items():

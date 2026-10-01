@@ -27,7 +27,11 @@ from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
-from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.config.schema import (
+    PipelineConfig,
+    StageConfig,
+    parse_replica_instance_name,
+)
 from sglang_omni.config.topology import LogicalProcessPlan, ProcessTopologyPlan
 from sglang_omni.mps.runtime import MpsPipelineRuntime, create_for_pipeline
 from sglang_omni.pipeline import Coordinator
@@ -171,6 +175,7 @@ def build_stage_groups(
     single_stage_specs: dict[str, StageLaunchConfig] = {}
     tp_groups: list[StageGroup] = []
     for stage_cfg in stages_cfg:
+        logical_stage_name, _ = parse_replica_instance_name(stage_cfg.name)
         tp_size = stage_cfg.tp_size
         gpu_ids = resolve_stage_gpu_ids(placement_plan, stage_cfg)
         nccl_port = nccl_port_counter.allocate() if tp_size > 1 else None
@@ -195,7 +200,7 @@ def build_stage_groups(
             next_stages=stage_cfg.next,
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
-            env_defaults={**config.resolved_env_defaults(), **stage_cfg.env},
+            env_defaults=config.resolved_stage_env_defaults(logical_stage_name),
             wait_for=stage_cfg.wait_for,
             wait_for_fn=stage_cfg.wait_for_fn,
             merge_fn=stage_cfg.merge_fn,
@@ -277,7 +282,11 @@ def build_stage_groups(
 
 
 def apply_cpu_thread_plan(groups: list[StageGroup]) -> dict[str, int]:
-    """Share CPU capacity equally across the final OS worker processes."""
+    """Set equal-share thread-pool fallbacks for final OS worker processes.
+
+    Environment and model policies can override these defaults; their sum
+    does not bound the pipeline's concurrent CPU usage.
+    """
     process_specs = [spec for group in groups for spec in group.process_specs]
     if not process_specs:
         return {}
@@ -294,15 +303,15 @@ def apply_cpu_thread_plan(groups: list[StageGroup]) -> dict[str, int]:
 
     allocations = {
         spec.process_name: {
-            "threads": spec.cpu_threads,
+            "fallback_threads": spec.cpu_threads,
             "stages": [stage.stage_name for stage in spec.stage_specs],
         }
         for spec in process_specs
     }
     logger.info(
-        f"CPU thread plan: budget={cpu_budget} processes={process_count} "
-        f"threads_per_process={threads_per_process} "
-        f"overcommitted={str(process_count > cpu_budget).lower()} "
+        f"CPU thread fallback plan: budget={cpu_budget} processes={process_count} "
+        f"fallback_threads_per_process={threads_per_process} "
+        f"fallback_overcommitted={str(process_count > cpu_budget).lower()} "
         f"allocations={allocations}"
     )
     return plan
