@@ -18,7 +18,6 @@ from websockets.asyncio.server import ServerConnection
 
 from benchmarks.duplex.client import (
     PACKET_BYTES,
-    PACKET_MS,
     SEND_RECEIPTS_FILE,
     run_session,
     scheduled_send_s,
@@ -42,6 +41,7 @@ def recorded_session(
     send_delay_s: float = 0.0,
     failed: bool = False,
     output_samples: list[int] | None = None,
+    media_time: bool = False,
 ) -> dict[str, JsonValue]:
     trace_path.parent.mkdir(parents=True)
     receipts = [
@@ -63,9 +63,16 @@ def recorded_session(
             "event": {
                 "type": "response.output_audio.delta",
                 "delta": base64.b64encode(b"\x00\x00" * samples).decode("ascii"),
+                **(
+                    {"sglang": {"media_time": {"t_start_ms": index * 80}}}
+                    if media_time
+                    else {}
+                ),
             },
         }
-        for timestamp_s, samples in zip(output_times_s, packet_samples)
+        for index, (timestamp_s, samples) in enumerate(
+            zip(output_times_s, packet_samples)
+        )
     ]
     records.extend(
         [
@@ -120,6 +127,7 @@ def test_synthetic_serving_metrics(tmp_path: Path) -> None:
     assert perfect["output_gap_excess_s"]["max"] == pytest.approx(0)
     assert perfect["output_drift_s"]["max"] == pytest.approx(0)
     assert perfect["final_output_drift_s"] == pytest.approx(0)
+    assert perfect["required_playout_buffer_s"] == pytest.approx(0)
     assert perfect["late_send_rate"] == 0
     assert perfect["output_coverage"] == pytest.approx(1)
     assert perfect["underrun_count"] == 0
@@ -132,6 +140,7 @@ def test_synthetic_serving_metrics(tmp_path: Path) -> None:
     assert stalled["output_gap_excess_s"]["max"] == pytest.approx(0.12)
     assert stalled["output_drift_s"]["p75"] == pytest.approx(0.12)
     assert stalled["final_output_drift_s"] == pytest.approx(0.12)
+    assert stalled["required_playout_buffer_s"] == pytest.approx(0.12)
     assert stalled["underrun_count"] == 1
     assert stalled["underrun_total_s"] == pytest.approx(0.04)
     assert stalled["underrun_ratio"] == pytest.approx(0.125)
@@ -150,6 +159,16 @@ def test_synthetic_serving_metrics(tmp_path: Path) -> None:
     assert late["late_send_count"] == 4
     assert late["late_send_rate"] == 1
 
+    aligned = recorded_session(
+        tmp_path / "aligned" / "trace.jsonl",
+        [10.1, 10.18, 10.26, 10.34],
+        send_delay_s=0.02,
+        media_time=True,
+    )
+    assert aligned["media_schedule_lag_s"]["n"] == 4
+    assert aligned["media_schedule_lag_s"]["p95"] == pytest.approx(0.1)
+    assert aligned["media_send_lag_s"]["p95"] == pytest.approx(0.08)
+
     batched = recorded_session(
         tmp_path / "batched" / "trace.jsonl",
         [10, 10.1, 10.19],
@@ -163,6 +182,7 @@ def test_synthetic_serving_metrics(tmp_path: Path) -> None:
     assert silent["ttfa_s"] is None
     assert silent["output_drift_s"]["n"] == 0
     assert silent["final_output_drift_s"] is None
+    assert silent["required_playout_buffer_s"] is None
     assert silent["output_coverage"] == 0
     assert silent["underrun_total_s"] == INPUT_DURATION_S
     assert silent["underrun_ratio"] == 1
@@ -176,6 +196,8 @@ def test_synthetic_serving_metrics(tmp_path: Path) -> None:
     assert aggregate["output_coverage"]["p50"] == pytest.approx(0.5)
     assert aggregate["ttfa_s"]["n"] == 2
     assert aggregate["final_output_drift_s"]["n"] == 2
+    assert aggregate["required_playout_buffer_s"]["p95"] == pytest.approx(0)
+    assert aggregate["media_schedule_lag_s"]["n"] == 0
     assert aggregate["late_send_rate"] == 0
     assert aggregate["underrun_ratio"] == pytest.approx(0.5)
 
@@ -187,7 +209,7 @@ def test_scheduled_deadlines_do_not_follow_late_sends() -> None:
     assert scheduled_send_s(10, 3) == pytest.approx(10.24)
 
 
-def test_late_start_does_not_burst_input(tmp_path: Path) -> None:
+def test_late_start_catches_up_to_absolute_schedule(tmp_path: Path) -> None:
     async def run() -> list[dict[str, JsonValue]]:
         peer = DuplexPeer()
         async with websockets.serve(peer.handler, "127.0.0.1", 0) as server:
@@ -197,7 +219,7 @@ def test_late_start_does_not_burst_input(tmp_path: Path) -> None:
             trace_path = tmp_path / "trace.jsonl"
             await run_session(
                 f"ws://127.0.0.1:{port}/v1/realtime",
-                b"\x00\x00" * (3 * PACKET_BYTES // 2),
+                b"\x00\x00" * (12 * PACKET_BYTES // 2),
                 scenario="continuous",
                 trace_path=trace_path,
                 start_gate=gate,
@@ -207,15 +229,28 @@ def test_late_start_does_not_burst_input(tmp_path: Path) -> None:
             ]
 
     appends = asyncio.run(run())
-    assert len(appends) == 3
+    assert len(appends) == 12
     assert appends[0]["start_s"] - appends[0]["scheduled_s"] >= 0.25
     assert [r["scheduled_s"] - appends[0]["scheduled_s"] for r in appends] == (
-        pytest.approx([0, 0.08, 0.16])
+        pytest.approx([index * 0.08 for index in range(12)])
     )
-    assert all(
-        current["start_s"] - previous["start_s"] >= PACKET_MS / 1000 - 0.005
-        for previous, current in zip(appends, appends[1:])
-    )
+    assert appends[2]["start_s"] - appends[0]["start_s"] < 0.08
+    assert appends[-1]["start_s"] - appends[-1]["scheduled_s"] < 0.04
+
+
+def test_serving_rejects_noncontinuous_profile(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="does not produce continuous output"):
+        asyncio.run(
+            run_concurrency(
+                "ws://127.0.0.1:1/v1/realtime",
+                b"\x00\x00" * 1280,
+                concurrency=1,
+                profile="minicpmo-native-pr2377",
+                output_dir=tmp_path / "invalid",
+                timeout_s=1,
+                reserve_s=0.08,
+            )
+        )
 
 
 def test_coordinator_keeps_failed_session(tmp_path: Path) -> None:
@@ -237,6 +272,7 @@ def test_coordinator_keeps_failed_session(tmp_path: Path) -> None:
                 output_dir=tmp_path / "c3",
                 timeout_s=5,
                 reserve_s=0.08,
+                loop_lag_limit_s=1e-9,
             )
         assert len(peers) == 3
         return result
@@ -245,6 +281,8 @@ def test_coordinator_keeps_failed_session(tmp_path: Path) -> None:
     assert summary["configured_sessions"] == 2
     assert summary["aggregate"]["attempted_sessions"] == 3
     assert summary["aggregate"]["successful_sessions"] == 2
+    assert summary["client_timing_valid"] is False
+    assert summary["loop_lag_s"]["n"] > 0
     assert summary["aggregate"]["underrun_ratio"] >= 1 / 3
     assert [session["success"] for session in summary["sessions"]] == [
         False,
@@ -283,9 +321,13 @@ def test_serving_cli_sweep_against_fake_server(tmp_path: Path) -> None:
                 "--audio",
                 str(audio_path),
                 "--profile",
-                "nemotron",
+                DEFAULT_PROFILE,
                 "--concurrencies",
                 "1,2",
+                "--repeats",
+                "2",
+                "--stagger-ms",
+                "80",
                 "--output-dir",
                 str(tmp_path / "results"),
                 stdout=asyncio.subprocess.PIPE,
@@ -296,11 +338,28 @@ def test_serving_cli_sweep_against_fake_server(tmp_path: Path) -> None:
             return process.returncode, stdout.decode()
 
     _, output = asyncio.run(run())
-    assert "1/1" in output
     assert "2/2" in output
+    assert "4/4" in output
     assert "late sends" in output
     assert "underrun sessions" in output
     assert "underrun ratio" in output
-    summaries = json.loads((tmp_path / "results" / "summary.json").read_text())["runs"]
-    assert [run["aggregate"]["attempted_sessions"] for run in summaries] == [1, 2]
-    assert [run["aggregate"]["successful_sessions"] for run in summaries] == [1, 2]
+    top_level = json.loads((tmp_path / "results" / "summary.json").read_text())
+    summaries = top_level["runs"]
+    assert [run["aggregate"]["attempted_sessions"] for run in summaries] == [1, 2, 1, 2]
+    assert [run["aggregate"]["successful_sessions"] for run in summaries] == [
+        1,
+        2,
+        1,
+        2,
+    ]
+    assert (tmp_path / "results" / "warmup" / "summary.json").exists()
+    assert [level["aggregate"]["ttfa_s"]["n"] for level in top_level["levels"]] == [
+        2,
+        4,
+    ]
+    assert summaries[1]["sessions"][1]["ttfa_s"] is not None
+    starts = [
+        json.loads(Path(session["receipts_file"]).read_text())["session_start_s"]
+        for session in summaries[1]["sessions"]
+    ]
+    assert starts[1] - starts[0] == pytest.approx(0.04)

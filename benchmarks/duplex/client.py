@@ -67,6 +67,7 @@ async def run_session(
     profile: ProfileName = DEFAULT_PROFILE,
     start_gate: asyncio.Future[float] | None = None,
     ready: asyncio.Future[bool] | None = None,
+    start_offset_s: float = 0.0,
 ) -> None:
     """Save observations and failures; classification belongs to offline replay."""
     if scenario != "continuous":
@@ -85,8 +86,12 @@ async def run_session(
         def record(
             direction: Literal["send", "receive", "error", "admission"],
             event: dict[str, JsonValue],
+            observed_time_s: float | None = None,
         ) -> float:
-            observed_time_s = time.perf_counter()
+            if observed_time_s is None:
+                observed_time_s = time.perf_counter()
+            else:
+                pass
             trace_file.write(
                 json.dumps(
                     {
@@ -200,6 +205,7 @@ async def run_session(
                 async def receive() -> None:
                     nonlocal fatal
                     async for frame in websocket:
+                        received_time_s = time.perf_counter()
                         try:
                             event = json.loads(frame)
                             if not isinstance(event, dict):
@@ -211,7 +217,7 @@ async def run_session(
                                 raise ValueError("server event type must be a string")
                             else:
                                 pass
-                            record("receive", event)
+                            record("receive", event, received_time_s)
                         except ValueError as exc:
                             raise ValueError(
                                 "malformed server frame "
@@ -257,22 +263,13 @@ async def run_session(
                             await start_gate
                             if start_gate is not None
                             else time.perf_counter()
-                        )
-                        previous_send_start_s: float | None = None
+                        ) + start_offset_s
                         for sequence, byte_offset in enumerate(
                             range(0, len(pcm), PACKET_BYTES)
                         ):
                             deadline_s = scheduled_send_s(session_start_s, sequence)
-                            earliest_s = max(
-                                deadline_s,
-                                (
-                                    previous_send_start_s + PACKET_MS / 1000
-                                    if previous_send_start_s is not None
-                                    else deadline_s
-                                ),
-                            )
                             await asyncio.sleep(
-                                max(0.0, earliest_s - time.perf_counter())
+                                max(0.0, deadline_s - time.perf_counter())
                             )
                             if aborted.is_set():
                                 streamed = False
@@ -290,7 +287,6 @@ async def run_session(
                                 },
                                 scheduled_s=deadline_s,
                             )
-                            previous_send_start_s = receipts[-1]["start_s"]
                     else:
                         pass
                     if streamed:

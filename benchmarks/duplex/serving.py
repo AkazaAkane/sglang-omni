@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import time
 from datetime import datetime, timezone
@@ -17,12 +18,16 @@ from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName
 from benchmarks.duplex.serving_metrics import (
     aggregate_sessions,
     distribution,
+    empty_session_metrics,
     session_metrics,
 )
 from benchmarks.duplex.v15_audio import normalize_audio
+from benchmarks.runtime_metrics import ResourceMonitor, collect_benchmark_provenance
 
 START_LEAD_S = 0.2
 DEFAULT_RESERVE_MS = 80.0
+LOOP_TICK_S = 0.01
+DEFAULT_LOOP_LAG_LIMIT_MS = 20.0
 
 
 async def run_concurrency(
@@ -34,12 +39,27 @@ async def run_concurrency(
     output_dir: Path,
     timeout_s: float,
     reserve_s: float,
+    stagger_s: float = 0.0,
+    loop_lag_limit_s: float = DEFAULT_LOOP_LAG_LIMIT_MS / 1000,
 ) -> dict[str, JsonValue]:
     if concurrency < 1:
         raise ValueError("concurrency must be positive")
     if not pcm or len(pcm) % 2:
         raise ValueError("input must be nonempty PCM16")
+    if not PROFILES[profile].continuous_output:
+        raise ValueError(f"profile {profile} does not produce continuous output")
+    if stagger_s < 0 or loop_lag_limit_s <= 0:
+        raise ValueError("stagger must be nonnegative and loop lag limit positive")
     output_dir.mkdir(parents=True, exist_ok=False)
+    loop_lags_s: list[float] = []
+
+    async def measure_loop_lag() -> None:
+        while True:
+            deadline_s = time.perf_counter() + LOOP_TICK_S
+            await asyncio.sleep(LOOP_TICK_S)
+            loop_lags_s.append(max(0.0, time.perf_counter() - deadline_s))
+
+    ticker = asyncio.create_task(measure_loop_lag())
     loop = asyncio.get_running_loop()
     start_gate: asyncio.Future[float] = loop.create_future()
     ready = [loop.create_future() for _ in range(concurrency)]
@@ -60,6 +80,7 @@ async def run_concurrency(
                 profile=profile,
                 start_gate=start_gate,
                 ready=ready[index],
+                start_offset_s=stagger_s * index / concurrency,
             )
         )
         task.add_done_callback(
@@ -72,6 +93,8 @@ async def run_concurrency(
     start_s = time.perf_counter() + START_LEAD_S
     start_gate.set_result(start_s)
     results = await asyncio.gather(*tasks, return_exceptions=True)
+    ticker.cancel()
+    await asyncio.gather(ticker, return_exceptions=True)
     duration_s = len(pcm) / (2 * SAMPLE_RATE)
     sessions = []
     for index, (trace_path, result) in enumerate(zip(trace_paths, results)):
@@ -85,32 +108,8 @@ async def run_concurrency(
                 reserve_s=reserve_s,
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            session = {
-                "session_id": session_id,
-                "input_duration_s": duration_s,
-                "trace_file": str(trace_path),
-                "success": False,
-                "errors": [f"unreadable session artifacts: {exc}"],
-                "ttfa_s": None,
-                "send_lateness_s": distribution([]),
-                "late_send_count": 0,
-                "late_send_rate": None,
-                "output_gap_s": distribution([]),
-                "output_gap_excess_s": distribution([]),
-                "output_drift_s": distribution([]),
-                "final_output_drift_s": None,
-                "send_lateness_values_s": [],
-                "output_gap_values_s": [],
-                "output_gap_excess_values_s": [],
-                "output_drift_values_s": [],
-                "output_samples": 0,
-                "output_duration_s": 0.0,
-                "output_coverage": 0.0,
-                "underrun_count": 1,
-                "underrun_total_s": duration_s,
-                "underrun_worst_s": duration_s,
-                "underrun_ratio": 1.0,
-            }
+            session = empty_session_metrics(trace_path, session_id, duration_s)
+            session["errors"].append(f"unreadable session artifacts: {exc}")
         if isinstance(result, BaseException):
             session["success"] = False
             session["errors"].append(f"client task: {type(result).__name__}: {result}")
@@ -119,11 +118,16 @@ async def run_concurrency(
         "concurrency": concurrency,
         "input_duration_s": duration_s,
         "common_start_s": start_s,
+        "stagger_s": stagger_s,
         "configured_sessions": sum(configured),
         "profile": profile,
         "playback_startup_reserve_s": reserve_s,
         "sessions": sessions,
         "aggregate": aggregate_sessions(sessions),
+        "loop_lag_s": distribution(loop_lags_s),
+        "loop_lag_limit_s": loop_lag_limit_s,
+        "client_timing_valid": bool(loop_lags_s)
+        and distribution(loop_lags_s)["p99"] <= loop_lag_limit_s,
     }
     (output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, allow_nan=False) + "\n", encoding="utf-8"
@@ -146,6 +150,11 @@ def print_summary(summary: dict[str, JsonValue]) -> None:
         f"Duration: {summary['input_duration_s']:.2f}s  "
         f"Sessions: {aggregate['successful_sessions']}/{aggregate['attempted_sessions']}"
     )
+    print(
+        f"Loop lag p99: {format_ms(summary['loop_lag_s']['p99'])}ms "
+        f"(n={summary['loop_lag_s']['n']}, "
+        f"valid={summary['client_timing_valid']})"
+    )
     print(f"{'Metric':22} {'p50':>9} {'p75':>9} {'p95':>9} {'p99':>9} {'max':>9}")
     for label, name in (
         ("TTFA (ms)", "ttfa_s"),
@@ -153,13 +162,16 @@ def print_summary(summary: dict[str, JsonValue]) -> None:
         ("Output gap (ms)", "output_gap_s"),
         ("Gap excess (ms)", "output_gap_excess_s"),
         ("Output drift (ms)", "output_drift_s"),
+        ("Media schedule lag (ms)", "media_schedule_lag_s"),
+        ("Media send lag (ms)", "media_send_lag_s"),
     ):
         values = aggregate[name]
         print(
             f"{label:22} {format_ms(values['p50']):>9} "
             f"{format_ms(values['p75']):>9} "
             f"{format_ms(values['p95']):>9} "
-            f"{format_ms(values['p99']):>9} {format_ms(values['max']):>9}"
+            f"{format_ms(values['p99']):>9} {format_ms(values['max']):>9} "
+            f"n={values['n']}"
         )
     coverage = aggregate["output_coverage"]["p50"]
     print(f"Output coverage p50: {coverage * 100:.1f}%")
@@ -172,6 +184,12 @@ def print_summary(summary: dict[str, JsonValue]) -> None:
         "Final output drift p50/p95: "
         f"{format_ms(aggregate['final_output_drift_s']['p50'])}/"
         f"{format_ms(aggregate['final_output_drift_s']['p95'])}ms"
+    )
+    print(
+        "Required playout buffer p50/p95: "
+        f"{format_ms(aggregate['required_playout_buffer_s']['p50'])}/"
+        f"{format_ms(aggregate['required_playout_buffer_s']['p95'])}ms "
+        f"(n={aggregate['required_playout_buffer_s']['n']})"
     )
     print(
         f"Underrun sessions: {aggregate['underrun_sessions']}/"
@@ -187,19 +205,26 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True)
     parser.add_argument("--audio", required=True, type=Path)
-    parser.add_argument(
-        "--profile", choices=["nemotron", *PROFILES], default="nemotron"
-    )
+    parser.add_argument("--profile", choices=list(PROFILES), default=DEFAULT_PROFILE)
     concurrency = parser.add_mutually_exclusive_group(required=True)
     concurrency.add_argument("--concurrency", type=int)
     concurrency.add_argument("--concurrencies")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--timeout-s", type=float, default=90.0)
     parser.add_argument("--startup-reserve-ms", type=float, default=DEFAULT_RESERVE_MS)
-    args = parser.parse_args()
-    profile: ProfileName = (
-        DEFAULT_PROFILE if args.profile == "nemotron" else args.profile
+    parser.add_argument("--stagger-ms", type=float, default=0.0)
+    parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument(
+        "--loop-lag-limit-ms", type=float, default=DEFAULT_LOOP_LAG_LIMIT_MS
     )
+    parser.add_argument("--gpu-index", type=int)
+    parser.add_argument("--gpu-process-pid", type=int, action="append")
+    parser.add_argument("--model-id", default="unspecified")
+    parser.add_argument("--model-revision")
+    parser.add_argument("--server-sha")
+    parser.add_argument("--server-config", type=Path)
+    args = parser.parse_args()
+    profile: ProfileName = args.profile
     levels = (
         [args.concurrency]
         if args.concurrency is not None
@@ -207,53 +232,143 @@ def main() -> None:
     )
     if not levels or any(level < 1 for level in levels):
         parser.error("concurrency values must be positive")
+    if len(set(levels)) != len(levels):
+        parser.error("concurrency values must be unique")
     if args.timeout_s <= 0 or args.startup_reserve_ms < 0:
         parser.error("timeout must be positive and startup reserve nonnegative")
+    if args.stagger_ms < 0 or args.repeats < 1 or args.loop_lag_limit_ms <= 0:
+        parser.error("stagger must be nonnegative; repeats and loop lag limit positive")
+    if args.gpu_process_pid and args.gpu_index is None:
+        parser.error("--gpu-process-pid requires --gpu-index")
+    if args.gpu_index is not None and args.gpu_index < 0:
+        parser.error("--gpu-index must be nonnegative")
+    if args.gpu_process_pid and any(pid <= 0 for pid in args.gpu_process_pid):
+        parser.error("--gpu-process-pid must be positive")
+    if not PROFILES[profile].continuous_output:
+        parser.error(f"profile {profile} does not produce continuous output")
+    server_config = {}
+    if args.server_config is not None:
+        server_config = json.loads(args.server_config.read_text(encoding="utf-8"))
+        if not isinstance(server_config, dict):
+            parser.error("server config must be a JSON object")
+    if args.server_sha is not None:
+        server_config["server_sha"] = args.server_sha
     pcm, _ = normalize_audio(args.audio)
     output_dir = args.output_dir or Path("serving-results") / datetime.now(
         timezone.utc
     ).strftime("%Y%m%dT%H%M%SZ")
     output_dir.mkdir(parents=True, exist_ok=False)
 
-    async def run_all() -> list[dict[str, JsonValue]]:
-        return [
-            await run_concurrency(
-                args.url,
-                pcm,
-                concurrency=level,
-                profile=profile,
-                output_dir=output_dir / f"c{level}",
-                timeout_s=args.timeout_s,
-                reserve_s=args.startup_reserve_ms / 1000,
-            )
-            for level in levels
-        ]
+    async def run_all() -> (
+        tuple[list[dict[str, JsonValue]], dict[str, JsonValue] | None]
+    ):
+        await run_concurrency(
+            args.url,
+            pcm,
+            concurrency=1,
+            profile=profile,
+            output_dir=output_dir / "warmup",
+            timeout_s=args.timeout_s,
+            reserve_s=args.startup_reserve_ms / 1000,
+        )
+        monitor = (
+            ResourceMonitor(
+                gpu_index=args.gpu_index,
+                gpu_process_pids=args.gpu_process_pid,
+            ).start()
+            if args.gpu_index is not None
+            else None
+        )
+        summaries = []
+        try:
+            for repeat in range(args.repeats):
+                for level in levels:
+                    summaries.append(
+                        await run_concurrency(
+                            args.url,
+                            pcm,
+                            concurrency=level,
+                            profile=profile,
+                            output_dir=output_dir
+                            / f"repeat-{repeat + 1}"
+                            / f"c{level}",
+                            timeout_s=args.timeout_s,
+                            reserve_s=args.startup_reserve_ms / 1000,
+                            stagger_s=args.stagger_ms / 1000,
+                            loop_lag_limit_s=args.loop_lag_limit_ms / 1000,
+                        )
+                    )
+                    summaries[-1]["repeat"] = repeat + 1
+        finally:
+            resources = monitor.stop() if monitor is not None else None
+        return summaries, resources
 
-    summaries = asyncio.run(run_all())
+    summaries, resources = asyncio.run(run_all())
+    provenance = collect_benchmark_provenance(
+        model_id=args.model_id,
+        model_revision=args.model_revision,
+        dataset_id=str(args.audio),
+        dataset_revision=None,
+        launch_command=None,
+        server_config=server_config,
+        evaluation_input_sha256=hashlib.sha256(pcm).hexdigest(),
+    )
+    level_summaries = [
+        {
+            "concurrency": level,
+            "repeats": args.repeats,
+            "client_timing_valid": all(
+                run["client_timing_valid"]
+                for run in summaries
+                if run["concurrency"] == level
+            ),
+            "aggregate": aggregate_sessions(
+                [
+                    session
+                    for run in summaries
+                    if run["concurrency"] == level
+                    for session in run["sessions"]
+                ]
+            ),
+        }
+        for level in levels
+    ]
     (output_dir / "summary.json").write_text(
-        json.dumps({"runs": summaries}, indent=2, allow_nan=False) + "\n",
+        json.dumps(
+            {
+                "runs": summaries,
+                "levels": level_summaries,
+                "provenance": provenance,
+                "resources": resources,
+            },
+            indent=2,
+            allow_nan=False,
+        )
+        + "\n",
         encoding="utf-8",
     )
     if len(summaries) == 1:
         print_summary(summaries[0])
     else:
         print(
-            "C  success  TTFA p95  gap p99  coverage p50  "
-            "late sends  final drift p50  underrun sessions  underrun ratio"
+            "C  repeats  success  TTFA p95(n)  gap p99(n)  coverage p50(n)  "
+            "late sends  buffer p95(n)  loop valid  underrun sessions  underrun ratio"
         )
-        for summary in summaries:
+        for summary in level_summaries:
             aggregate = summary["aggregate"]
             underrun_sessions = (
                 f"{aggregate['underrun_sessions']}/{aggregate['attempted_sessions']}"
             )
             print(
-                f"{summary['concurrency']:<2} "
+                f"{summary['concurrency']:<2} {summary['repeats']:<7} "
                 f"{aggregate['successful_sessions']}/{aggregate['attempted_sessions']:<7} "
-                f"{format_ms(aggregate['ttfa_s']['p95']):>8} "
-                f"{format_ms(aggregate['output_gap_s']['p99']):>8} "
-                f"{aggregate['output_coverage']['p50'] * 100:>12.1f}% "
+                f"{format_ms(aggregate['ttfa_s']['p95'])}({aggregate['ttfa_s']['n']}) "
+                f"{format_ms(aggregate['output_gap_s']['p99'])}({aggregate['output_gap_s']['n']}) "
+                f"{aggregate['output_coverage']['p50'] * 100:.1f}%({aggregate['output_coverage']['n']}) "
                 f"{format_percent(aggregate['late_send_rate']):>11} "
-                f"{format_ms(aggregate['final_output_drift_s']['p50']):>15} "
+                f"{format_ms(aggregate['required_playout_buffer_s']['p95'])}"
+                f"({aggregate['required_playout_buffer_s']['n']}) "
+                f"{str(summary['client_timing_valid']):>10} "
                 f"{underrun_sessions:>17} "
                 f"{format_percent(aggregate['underrun_ratio']):>15}"
             )
