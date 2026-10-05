@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import queue
 from dataclasses import dataclass, field
-from types import SimpleNamespace
+from types import EllipsisType, SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -183,7 +183,9 @@ def make_payload(
     )
 
 
-def item(values: list[int], metadata: Any = ...) -> StreamItem:
+def item(
+    values: list[int], metadata: dict[str, object] | None | EllipsisType = ...
+) -> StreamItem:
     if metadata is ...:
         metadata = {"stream": True}
     return StreamItem(
@@ -253,6 +255,24 @@ def test_resolve_initial_codec_chunk_frames() -> None:
         )
     with pytest.raises(ValueError, match="steady_chunk_frames"):
         resolve_initial_codec_chunk_frames({}, steady_chunk_frames=0)
+
+
+@pytest.mark.parametrize(
+    ("priority_range", "expected_priority"),
+    [((0, -3), -2), ((0, -1), -1), ((0, 0), 0)],
+)
+def test_vocoder_decode_stream_priority_leaves_the_top_level_free(
+    monkeypatch: pytest.MonkeyPatch,
+    priority_range: tuple[int, int],
+    expected_priority: int,
+) -> None:
+    monkeypatch.setattr(
+        torch.cuda.Stream, "priority_range", staticmethod(lambda: priority_range)
+    )
+    assert (
+        streaming_vocoder.vocoder_decode_stream_priority(torch.cuda)
+        == expected_priority
+    )
 
 
 def test_is_streaming_payload_gate_names_subclass() -> None:
