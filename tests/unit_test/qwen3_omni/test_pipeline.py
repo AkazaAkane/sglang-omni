@@ -369,8 +369,9 @@ def test_merge_extracted_video_audio_rejects_mixed_audio_presence(missing) -> No
 
 
 @pytest.mark.parametrize("sampled_fps", [[2.0, 2.0], [2.0, 4.0]])
+@pytest.mark.parametrize("inline_audio_first", [False, True])
 def test_qwen_preprocessor_two_videos_and_audio_with_real_processor(
-    monkeypatch, sampled_fps
+    monkeypatch, sampled_fps, inline_audio_first
 ) -> None:
     """Keep audio features and tokens aligned through the real processor call."""
     from transformers import (
@@ -439,6 +440,23 @@ def test_qwen_preprocessor_two_videos_and_audio_with_real_processor(
         ),
         data={},
     )
+    if inline_audio_first:
+        payload.request.inputs = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "audio", "audio": explicit},
+                        {"type": "video", "video": "first.mp4"},
+                        {"type": "text", "text": "Between videos."},
+                        {"type": "video", "video": "second.mp4"},
+                    ],
+                }
+            ],
+            "use_audio_in_video": True,
+        }
+    else:
+        pass
     if sampled_fps[0] != sampled_fps[1]:
         with pytest.raises(ValueError, match="same sampled FPS"):
             asyncio.run(pre.call_impl(payload))
@@ -448,10 +466,14 @@ def test_qwen_preprocessor_two_videos_and_audio_with_real_processor(
     assert state.mm_inputs["video"]["video_second_per_grid"].tolist() == [1.0, 1.0]
     assert state.mm_inputs["video"]["video_grid_thw"].shape[0] == 2
     mask = state.encoder_inputs["audio_encoder"]["feature_attention_mask"]
-    assert mask.sum(-1).tolist() == [20, 40, 60]
+    assert mask.sum(-1).tolist() == (
+        [60, 20, 40] if inline_audio_first else [20, 40, 60]
+    )
     decoded = tokenizer.decode(state.prompt["input_ids"])
     spans = decoded.split(tokens["audio_eos_token"])[:3]
-    assert [span.count(tokens["audio_token"]) for span in spans] == [3, 5, 8]
+    assert [span.count(tokens["audio_token"]) for span in spans] == (
+        [8, 3, 5] if inline_audio_first else [3, 5, 8]
+    )
 
 
 @pytest.mark.parametrize(

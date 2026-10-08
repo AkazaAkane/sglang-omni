@@ -26,6 +26,7 @@ from sglang_omni.models.qwen3_omni.payload_types import (
     EncoderInputs,
     Qwen3OmniPipelineState,
 )
+from sglang_omni.models.qwen3_omni.prompt_frontend import parse_ordered_chat
 from sglang_omni.models.qwen3_omni.request_builders import build_lightweight_mm_inputs
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing import (
@@ -39,7 +40,6 @@ from sglang_omni.preprocessing import (
     ensure_chat_template,
     ensure_image_list_async,
     ensure_video_list_async,
-    normalize_messages,
 )
 from sglang_omni.preprocessing.resource_connector import (
     MultiModalResourceConnector,
@@ -432,7 +432,10 @@ class Qwen3OmniPreprocessor:
                     content_parts.append({"type": "video"})
                 for _ in range(num_audios):
                     content_parts.append({"type": "audio"})
-                content_parts.append({"type": "text", "text": content})
+                if isinstance(content, list):
+                    content_parts.extend(content)
+                else:
+                    content_parts.append({"type": "text", "text": content})
                 result.append({"role": role, "content": content_parts})
             else:
                 result.append(msg)
@@ -607,6 +610,38 @@ class Qwen3OmniPreprocessor:
         inputs = payload.request.inputs
         if is_pretokenized_prompt(inputs):
             return self.preprocess_train_inputs(payload, inputs)
+        elif (
+            isinstance(inputs, dict)
+            and inputs.get("multimodal_train_inputs") is not None
+        ):
+            return self.preprocess_train_inputs(
+                payload, inputs["input_ids"], inputs["multimodal_train_inputs"]
+            )
+        else:
+            pass
+        raw_messages = (
+            inputs.get("messages", []) if isinstance(inputs, dict) else inputs
+        )
+        ordered_chat = parse_ordered_chat(raw_messages)
+        has_inline_media = bool(
+            ordered_chat.images or ordered_chat.audios or ordered_chat.videos
+        )
+        if has_inline_media:
+            if isinstance(inputs, dict) and any(
+                inputs.get(name)
+                for name in ("images", "audios", "audio", "videos", "video")
+            ):
+                raise ValueError(
+                    "Inline media cannot be combined with top-level images, audios or videos"
+                )
+            else:
+                inputs = {
+                    **(inputs if isinstance(inputs, dict) else {}),
+                    "messages": ordered_chat.messages,
+                    "images": ordered_chat.images,
+                    "audios": ordered_chat.audios,
+                    "videos": ordered_chat.videos,
+                }
         else:
             pass
         if isinstance(inputs, dict):
@@ -767,6 +802,30 @@ class Qwen3OmniPreprocessor:
             resolved_video_seconds_per_chunk = None
             resolved_video_position_id_per_seconds = None
 
+        if has_inline_media and audio_from_video:
+            explicit_audio_index = 0
+            video_audio_index = 0
+            ordered_audios = []
+            for message in ordered_chat.messages:
+                content = message["content"]
+                if isinstance(content, list):
+                    for part in content:
+                        if part["type"] == "audio":
+                            ordered_audios.append(audios_result[explicit_audio_index])
+                            explicit_audio_index += 1
+                        elif part["type"] == "video":
+                            ordered_audios.append(
+                                extracted_audio_from_video[video_audio_index]
+                            )
+                            video_audio_index += 1
+                        else:
+                            pass
+                else:
+                    pass
+            audios = ordered_audios
+        else:
+            pass
+
         # Note (wenyao): URLs can change content and sampled hashes can miss edits,
         # so audio cache keys include every decoded sample, including video tracks.
         audio_cache_key = compute_audio_cache_key(audios)
@@ -774,16 +833,20 @@ class Qwen3OmniPreprocessor:
         image_cache_key = compute_image_cache_key(images)
         video_cache_key = compute_video_cache_key(videos)
 
-        messages_norm = normalize_messages(messages)
+        messages_norm = ordered_chat.messages
         # Insert placeholders:
         # - Explicit audio files get independent audio placeholders
         # - Video audio (when use_audio_in_video=True) is handled by video token, no separate placeholder
         num_audios_for_placeholder = num_explicit_audios
-        messages_mm = self.build_multimodal_messages(
-            messages_norm,
-            num_images=len(images),
-            num_audios=num_audios_for_placeholder,
-            num_videos=len(videos),
+        messages_mm = (
+            messages_norm
+            if has_inline_media
+            else self.build_multimodal_messages(
+                messages_norm,
+                num_images=len(images),
+                num_audios=num_audios_for_placeholder,
+                num_videos=len(videos),
+            )
         )
         prompt_text = self.processor.apply_chat_template(
             messages_mm,
