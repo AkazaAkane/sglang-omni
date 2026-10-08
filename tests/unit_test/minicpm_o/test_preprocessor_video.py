@@ -15,6 +15,7 @@ import pytest
 from PIL import Image
 from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.models.minicpm_o import video_frontend
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
 from sglang_omni.models.minicpm_o.video_frontend import MiniCPMVideoIO, TimedVideo
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -23,6 +24,12 @@ from tests.unit_test.minicpm_o.test_preprocessor_prompt import (
     ProcessorOutput,
     RecordingProcessor,
 )
+
+
+def test_timed_video_reports_missing_decoder(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(video_frontend, "VideoReader", None)
+    with pytest.raises(RuntimeError, match="decord==0.6.0.*x86_64 only"):
+        MiniCPMVideoIO(use_audio=False).load_file(Path("unused.mp4"))
 
 
 class VideoRecordingProcessor(RecordingProcessor):
