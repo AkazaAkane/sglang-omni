@@ -1,0 +1,19 @@
+{
+  "main_commit": "5d8aed3162daf535d81ab5db7f61a4d5f43b35bb",
+  "pr_commit": "6b7d30e725044e6ca9c84c952c4063e81f90753e",
+  "checkpoint_revision": "503e754207c94da6bb26850b4469f367c9ea3582",
+  "container_image": "docker.io/hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df",
+  "runtime": {"sglang": "0.5.21", "torch": "2.13.0+cu130", "transformers": "5.12.1"},
+  "gpu": "NVIDIA H200, physical GPU 0 for both sequential servers",
+  "omp_num_threads": 8,
+  "mkl_num_threads": 8,
+  "server_arguments": ["--text-only", "--mem-fraction-static", "0.6", "--thinker.factory.max_seq_len", "32768"],
+  "generation": {"temperature": 0, "max_tokens": 256, "seed": 0, "repetition_penalty": 1, "modalities": ["text"]},
+  "request_order": "main inline 350, main inline video 50, main top-level 350, main top-level video 50; then PR inline 350 and video 50",
+  "manifest_sha256": {
+    "parity-fixtures/manifest.json": "74c883f033a996b7a6584f8bc1f5298edd432af8cb5a3644b487f7b730d76426",
+    "video-parity-fixtures/manifest.json": "b4e68e1682a96fb38cf02f0ea1cdd085fcf50cbd45eb765a61699a1f9a1b69e8"
+  },
+  "top_level_video_frame_cap": 64,
+  "notes": "Official HF numbers are existing frozen-reference measurements. Both Omni branches use the same server configuration; production source is not modified for evaluation. Raw captures remain local."
+}

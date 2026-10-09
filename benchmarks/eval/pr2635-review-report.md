@@ -1,8 +1,9 @@
 # MiniCPM-o PR 2635 review verification
 
 This report supersedes the MiniCPM measurements in frontend-parity-report.md.
-Production commit: cf0272d6172e62217d08002e141f48496ce3c766, based on
-9ab7942c14f3a1df52ba79989c7a6c9b6fb00439. Shared production modules are unchanged.
+Current production commit: 6b7d30e725044e6ca9c84c952c4063e81f90753e, rebased on
+upstream main 5d8aed3162daf535d81ab5db7f61a4d5f43b35bb. Earlier review verification
+used cf0272d6172e62217d08002e141f48496ce3c766. Shared production modules are unchanged.
 
 ## Changes and official implementation
 
@@ -53,6 +54,9 @@ Sources:
 
 ## Tests and input parity
 
+- Post-rebase MiniCPM, shared preprocessing and API regression: 468 passed,
+  13 skipped; pre-commit on the PR diff passed. Main's text-to-speech support
+  is preserved. Video frontend, ordered renderer and video tests are unchanged.
 - Final focused frontend/preprocessing tests: 145 passed.
 - Broader regression: 1762 passed, 15 environment-dependent skips. This run
   preceded four additional empty-content parametrizations; those passed in the
@@ -76,23 +80,36 @@ Sources:
 
 ## Final generation benchmark
 
-The final production commit completed 350 text/image/audio cases and 50
-audio/video questions with zero request errors. Official results use the same
-frozen inputs and checkpoint, in a separately recorded reference runtime.
+The post-rebase comparison uses upstream main 5d8aed31 and PR 6b7d30e7, the
+same frozen checkpoint/manifests, server settings, container and physical GPU.
+Main inline, main top-level and PR inline completed 400 cases each with zero
+request errors (1200 total). Official results are earlier frozen-reference measurements in the
+separately recorded reference runtime.
 
-| Task | Cases | Official HF | Final PR |
-| --- | ---: | ---: | ---: |
-| MMMU accuracy | 50 | 22% | 20% |
-| MMSU accuracy | 100 | 69% | 67% |
-| English raw WER | 100 | 0.6865% | 44.9275% |
-| English extracted WER | 100 | 0.6865% | 3.8902% |
-| Chinese CER | 100 | 0.5405% | 0.8108% |
-| Audio/video accuracy | 50 | 74% | 72% |
+| Task | Cases | Main inline | PR inline | Official HF | Main top-level control |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| MMMU accuracy | 50 | 14% | 20% | 22% | 16% |
+| MMSU accuracy | 100 | 42% | 68% | 69% | 68% |
+| English raw WER | 100 | 100% | 44.9275% | 0.6865% | 2.9748% |
+| English extracted WER | 100 | 100% | 3.8902% | 0.6865% | 1.1442% |
+| Chinese CER | 100 | 99.4595% | 0.8108% | 0.5405% | 1.3514% |
+| Audio/video accuracy | 50 | 44% | 72% | 74% | 72% |
 
-Earlier PR runs recorded MMSU 68%. The final run records 67%; mmsu-0068 changed
-from D to A. A targeted rerun on the untouched earlier PR also answered A three
-times. This does not prove a frontend cause or a GPU cause, and complete
-generation parity is not claimed. The observed final result is retained.
+Main inline normalizes multipart content by keeping only text parts and drops
+inline media. The primary comparison measures the fix for that API behavior:
+MMMU +6 percentage points, MMSU +26 points and audio/video +28 points, with
+large ASR error reductions. Main top-level is a separate legacy-entry control,
+not the same wire request. It shows that media handling already works through
+that entry point; video gains must not be attributed to decoder accuracy alone.
+The PR's English ASR remains worse than main top-level, including extracted
+WER. This report does not claim improvement on every entry point.
+All 50 post-rebase PR video responses match the pre-rebase video capture.
+
+The latest PR MMSU run records 68%. The earlier cf0272d6 run recorded 67%, with
+mmsu-0068 changing from D to A; targeted untouched-PR reruns also answered A.
+The current rerun answers D again. These observations do not prove a frontend
+cause or GPU cause, and complete generation parity is not claimed. Historical
+raw captures and the earlier aggregate result remain preserved.
 
 English raw WER includes a ||| JSON suffix emitted on 45 samples. Extracted WER
 removes only that suffix; this execution difference remains unresolved. Strict
@@ -124,9 +141,9 @@ merged feature rounding differ. Errors count as incorrect. This compares whole
 decode policies, not decoder engines alone; blindly reverting would reintroduce
 an input correctness issue.
 
-Additional baseline 350-case runs observed inline/top-level MMMU 6%/20% and
-MMSU 43%/68%. Earlier published baseline 14%/42% was not reproduced by these
-runs and is not presented as the current comparison.
+Historical baseline b9aa02d4 runs observed inline/top-level MMMU 6%/20% and
+MMSU 43%/68%. The new upstream-main 5d8aed31 run records inline 14%/42% and
+top-level 16%/68%; these distinct commits/runs are kept separate.
 
 ## One-clip decode microbenchmark
 
@@ -171,6 +188,13 @@ pr2635-results/. Raw generation captures, input captures, manifests, media and
 the isolated ablation/profile/probe scripts remain locally in benchmark-data/
 and benchmark-tools/. The final raw files are minicpm-only-final-multimodal.json
 and minicpm-only-final-video.json; official captures are final-official-*.
+
+The post-rebase comparison uses rebased-main-inline-*, rebased-main-top-level-*
+and rebased-pr-inline-* raw captures. Both Omni checkouts run sequentially on
+physical GPU 0 in the same container, with --text-only, --mem-fraction-static 0.6
+and --thinker.factory.max_seq_len 32768. The frozen fixture manifests and
+request settings are identical; top-level is an additional legacy-entry control.
+Runtime/commit/manifest hashes are recorded in rebased-comparison-runtime.json.
 
 Use the validation scripts with production imported first. Run official capture
 in the Transformers 4.51 reference environment. Reuse the frozen manifests and
