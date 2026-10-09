@@ -15,7 +15,6 @@ import transformers
 from datasets import Audio
 from datasets import Image as DatasetImage
 from datasets import load_dataset
-from huggingface_hub import HfApi
 from minicpmo.utils import get_video_frame_audio_segments
 from PIL import Image
 from transformers import AutoModel
@@ -87,7 +86,11 @@ def prepare(output: Path) -> None:
         ("zhaochenyang20/seed-tts-eval-arrow", "en", "asr_en"),
         ("zhaochenyang20/seed-tts-eval-arrow", "zh", "asr_zh"),
     ]:
-        revision = HfApi().dataset_info(dataset_name).sha
+        revision = {
+            "zhaochenyang20/mmmu-ci-50": "ff72fd69cc7e0719e04a0ddb12d160de89c6fefe",
+            "zhaochenyang20/mmsu-ci-2000": "5ae6ed4343a89566be6dd90023d529f1bd97802d",
+            "zhaochenyang20/seed-tts-eval-arrow": "81d1901582dee1293a537a6d945d084301712c41",
+        }[dataset_name]
         sources[dataset_name] = revision
         dataset = load_dataset(dataset_name, split=split, revision=revision)
         dataset = dataset.select(range(min(100, len(dataset))))
@@ -356,11 +359,11 @@ def run(arguments: argparse.Namespace) -> None:
                                 if part["type"] == "text":
                                     texts.append(part["text"])
                                 else:
-                                    name = (
-                                        "images"
-                                        if part["type"] == "image_url"
-                                        else "audios"
-                                    )
+                                    name = {
+                                        "image_url": "images",
+                                        "audio_url": "audios",
+                                        "video_url": "videos",
+                                    }[part["type"]]
                                     request.setdefault(name, []).append(
                                         part[part["type"]]["url"]
                                     )
@@ -368,6 +371,8 @@ def run(arguments: argparse.Namespace) -> None:
                                 {"role": message["role"], "content": "\n".join(texts)}
                             )
                         request["messages"] = messages
+                        if request.get("videos"):
+                            request["video_max_frames"] = 64
                     response = client.post(
                         arguments.api_url + "/v1/chat/completions", json=request
                     )

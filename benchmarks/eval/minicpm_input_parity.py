@@ -115,6 +115,12 @@ def main() -> None:
     parser.add_argument("--backend", choices=["official", "omni"], required=True)
     parser.add_argument("--family", choices=["minicpm", "qwen"], default="minicpm")
     parser.add_argument("--video", type=Path)
+    parser.add_argument(
+        "--video-audio", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--input-style", choices=["inline", "top-level"], default="inline"
+    )
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args()
     processor = AutoProcessor.from_pretrained(
@@ -184,8 +190,19 @@ def main() -> None:
     fixtures = cases()
     if arguments.video:
         frames, segments, _ = get_video_frame_audio_segments(str(arguments.video))
-        content = [element for pair in zip(frames, segments) for element in pair]
-        fixtures = {"video": [{"role": "user", "content": content}]}
+        content = (
+            [element for pair in zip(frames, segments) for element in pair]
+            if arguments.video_audio
+            else frames
+        )
+        fixtures = {
+            "video": [{"role": "user", "content": content}],
+            "video_multiturn": [
+                {"role": "user", "content": ["Hello", "World"]},
+                {"role": "assistant", "content": "OK"},
+                {"role": "user", "content": content},
+            ],
+        }
     if arguments.backend == "official":
         model_class = get_class_from_dynamic_module(
             "modeling_minicpmo.MiniCPMO", arguments.model_path
@@ -204,7 +221,7 @@ def main() -> None:
                     do_sample=False,
                     enable_thinking=False,
                     use_tts_template=False,
-                    omni_mode=bool(arguments.video),
+                    omni_mode=bool(arguments.video and arguments.video_audio),
                     **(
                         {"max_slice_nums": 1, "use_image_id": False}
                         if arguments.video
@@ -220,6 +237,7 @@ def main() -> None:
             try:
                 if arguments.video:
                     messages = [
+                        *messages[:-1],
                         {
                             "role": "user",
                             "content": [
@@ -227,12 +245,18 @@ def main() -> None:
                                     "type": "video_url",
                                     "video_url": {
                                         "url": str(arguments.video),
-                                        "use_audio": True,
+                                        "use_audio": arguments.video_audio,
                                     },
                                 }
                             ],
-                        }
+                        },
                     ]
+                if arguments.video and arguments.input_style == "top-level":
+                    messages = {
+                        "messages": [*messages[:-1], {"role": "user", "content": ""}],
+                        "videos": [str(arguments.video)],
+                        "use_audio_in_video": arguments.video_audio,
+                    }
                 payload = StagePayload(
                     request_id=name, request=OmniRequest(inputs=messages), data=None
                 )
