@@ -14,6 +14,7 @@ server. Other models keep their Swift backend.
 | `mlx-community/silero-vad-v6` | `qwen3_asr_server --model-kind silero_vad` | Streaming speech probability per 512-sample chunk with one stream state per audio stream (`/v1/vad/stream`), and offline speech ranges with the meeting sensitivity profile's options (`/v1/vad/speech_timestamps`); one server shared by every detector, started on first use |
 | `beshkenadze/cohere-transcribe-03-2026-mlx-fp16` | `cohere_transcribe_server` | Final with Voxt's language, punctuation, and token budget; long recordings use Silero VAD when voice-activity segmentation is selected; live text uses batch preview |
 | `mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16` | `qwen3_asr_server --model-kind sortformer` | Meeting speaker analysis: Voxt's feed policy (4.96 s feeds, tails padded to one frame), one streaming state per contiguous run of audio (`/v1/diarization/stream`), `feed`'s threshold, merge gap and state limits, the state-size checks and the timestamp mapping; one server shared by every analysis, started on first use |
+| `OpenMOSS-Team/MOSS-Transcribe-Diarize` | `moss_transcribe_diarize_server` | Final with the dictation or meeting prompt (hotwords included), 1200 s energy-cut chunks each with Voxt's token budget, timestamped speaker segments; live 4 s windows finalized as audio arrives, a preview of the last 2.5 s at most once a second |
 
 ## Build and run
 
@@ -27,8 +28,9 @@ Voxt/backend/run_omni_dev.sh run
 `build` builds the runtime into `Voxt/build/omni-runtime` with
 `sglang_omni_mlx/native/scripts/build_runtime.sh`, then builds "Voxt Omni Dev".
 `bin/` holds `qwen3_asr_server`, `qwen3_asr_transcribe`, `whisper_server`,
-`whisper_transcribe`, `cohere_transcribe_server`, `cohere_transcribe`, and the
-pinned MLX library and Metal kernels next to them.
+`whisper_transcribe`, `cohere_transcribe_server`, `cohere_transcribe`,
+`moss_transcribe_diarize_server`, `moss_transcribe`, and the pinned MLX library
+and Metal kernels next to them.
 
 "Voxt Omni Dev" has its own bundle identifier. It runs without the sandbox so it
 can start the runtime, and it sees `~/.voxt-omni-dev` as its home, so its

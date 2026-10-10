@@ -8,18 +8,29 @@ the real models.
 
 from __future__ import annotations
 
+import base64
 import http.client
+import io
 import json
 import struct
 import subprocess
 import time
 import uuid
+import wave
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from test_server_api import DATA_ROOT, RUNTIME_BIN, Server, clip, long_wav, sse_events
+from test_server_api import (
+    DATA_ROOT,
+    RUNTIME_BIN,
+    Server,
+    clip,
+    long_wav,
+    pcm16,
+    sse_events,
+)
 from websockets.exceptions import InvalidHandshake
 from websockets.sync.client import connect
 
@@ -40,6 +51,7 @@ VAD_FIELDS = {
     "vad_merge_gap_seconds": "1.0",
     "vad_max_chunk_seconds": "24.0",
 }
+MOSS_REPO = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
 
 
 class ModelServer(Server):
@@ -356,3 +368,155 @@ def test_cohere_rejects_a_bad_temperature(
     )
     assert status == 400
     assert "temperature" in json.loads(body)["detail"]
+
+
+@pytest.fixture(scope="module")
+def moss_server() -> Iterator[ModelServer]:
+    running = ModelServer(
+        "moss_transcribe_diarize_server", "moss_transcribe_diarize", MOSS_REPO
+    )
+    yield running
+    running.stop()
+
+
+def two_speaker_wav() -> bytes:
+    """Two LibriSpeech speakers half a second apart."""
+    out = io.BytesIO()
+    with wave.open(out, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(16000)
+        writer.writeframes(
+            pcm16("0000_en_short") + bytes(16000) + pcm16("0001_en_short")
+        )
+    return out.getvalue()
+
+
+def test_moss_request_returns_speaker_segments(moss_server: ModelServer) -> None:
+    assert moss_server.ready["model_name"].startswith("voxt-moss_transcribe_diarize-")
+    status, body = moss_server.post_form({}, two_speaker_wav())
+    assert status == 200
+    result = json.loads(body)
+    # Greedy decoding follows the chip's arithmetic, so the exact text and
+    # timestamps are a golden-file concern: assert the structure here.
+    segments = result["segments"]
+    assert [segment["speaker"] for segment in segments] == ["S01", "S02"]
+    assert [segment["start"] for segment in segments] == sorted(
+        segment["start"] for segment in segments
+    )
+    assert all(segment["end"] >= segment["start"] for segment in segments)
+    assert "Socrates begins the timaeus" in segments[0]["text"]
+    assert "no signs here" in segments[1]["text"]
+    assert "[S01]" in result["text"] and "[S02]" in result["text"]
+
+
+def test_moss_streamed_request_ends_with_segments(moss_server: ModelServer) -> None:
+    status, body = moss_server.post_form(
+        {"stream": "true", "include_generation_metadata": "true"},
+        clip("0006_en_short"),
+    )
+    assert status == 200
+    done, end = sse_events(body)
+    assert end == "[DONE]"
+    assert done["type"] == "transcript.text.done"
+    assert done["segments"] and done["generation_metadata"]["language"] is None
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"prompt": "<|audio_pad|> and <|audio_pad|>"},
+        {"max_new_tokens": "-1"},
+        {"max_new_tokens": "many"},
+    ],
+)
+def test_moss_invalid_requests_are_rejected(
+    moss_server: ModelServer, fields: dict[str, str]
+) -> None:
+    status, body = moss_server.post_form(fields, clip("0006_en_short"))
+    assert status == 400
+    assert "detail" in json.loads(body)
+
+
+def test_moss_realtime_rejects_a_prompt_it_cannot_render(
+    moss_server: ModelServer,
+) -> None:
+    with connect(f"ws://127.0.0.1:{moss_server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {
+                        "turn_detection": None,
+                        "prompt": "<|audio_pad|><|audio_pad|>",
+                    },
+                }
+            )
+        )
+        error = json.loads(socket.recv())
+        assert error["type"] == "error"
+        assert error["error"]["type"] == "invalid_request_error"
+        assert error["error"]["code"] == "invalid_prompt"
+        socket.send(
+            json.dumps({"type": "session.update", "session": {"turn_detection": None}})
+        )
+        assert json.loads(socket.recv())["type"] == "transcription_session.updated"
+
+
+def test_moss_realtime_finalizes_windows_with_segments(
+    moss_server: ModelServer,
+) -> None:
+    pcm = pcm16("0344_en_long")[: 10 * 32000]
+    with connect(f"ws://127.0.0.1:{moss_server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps({"type": "session.update", "session": {"turn_detection": None}})
+        )
+        assert json.loads(socket.recv())["type"] == "transcription_session.updated"
+        for start in range(0, len(pcm), 3200):
+            socket.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(pcm[start : start + 3200]).decode(),
+                    }
+                )
+            )
+            # Twice real time: a window decodes well within its 2 s of sending.
+            time.sleep(0.05)
+        socket.send(json.dumps({"type": "input_audio_buffer.commit"}))
+        socket.send(json.dumps({"type": "transcription.done"}))
+        events = []
+        while not events or events[-1]["type"] != "transcription.completed":
+            events.append(json.loads(socket.recv()))
+    finals = [
+        event
+        for event in events
+        if event["type"] == "transcription.segment" and event["is_final"]
+    ]
+    # Windows are finalized as they fill; one that fills during a decode waits
+    # for it, and may be joined by the tail at the commit.
+    assert len(finals) >= 2
+    assert [event["segment_id"] for event in finals] == list(range(len(finals)))
+    completed = events[-1]
+    assert completed["text"] == "\n".join(event["text"] for event in finals)
+    starts = [segment["start"] for segment in completed["segments"]]
+    assert starts == sorted(starts)
+    assert finals[1]["segments"][0]["start"] >= 4.0
+
+
+def test_moss_server_serves_only_moss() -> None:
+    completed = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "moss_transcribe_diarize_server"),
+            "--supervised",
+            "--model-kind",
+            "qwen3_asr",
+            "--model-directory",
+            "x",
+        ],  # fmt: skip
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 2
+    assert completed.stdout == ""

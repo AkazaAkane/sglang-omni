@@ -32,6 +32,9 @@ QUALITY_GROUPS = {
     "cer_zh": lambda clip: clip["lang"] == "zh",
     "mer_mixed": lambda clip: clip["stratum"] == "mixed",
 }
+# MOSS-Transcribe-Diarize tags: timestamps, speaker labels and acoustic events,
+# which Voxt's plain-text rendering drops before the text is shown.
+MOSS_TAG = re.compile(r"\[\d+(?:[.,]\d+)?\]|\[S\d+\]|\[[a-z][a-z0-9 _-]{0,31}\]")
 
 
 def tokens(text: str, lang: str) -> list[str]:
@@ -74,6 +77,14 @@ def quality(manifest: dict[str, dict], texts: dict[str, str]) -> dict[str, float
                 pass
         metrics[name] = round(errors / total, 5) if total else 0.0
     return metrics
+
+
+def spoken_text(text: str, model_kind: str | None) -> str:
+    """The text error rates are scored on: what Voxt shows of a model's output."""
+    if model_kind == "moss_transcribe_diarize":
+        return " ".join(MOSS_TAG.sub(" ", text).split())
+    else:
+        return text
 
 
 def transcribe(
@@ -255,7 +266,11 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         arguments.runtime_bin, arguments.data_root, golden, manifest
     )
     metrics = quality(
-        manifest, {clip_id: row["text"] for clip_id, row in results.items()}
+        manifest,
+        {
+            clip_id: spoken_text(row["text"], golden.get("model_kind"))
+            for clip_id, row in results.items()
+        },
     )
     device = chip()
 

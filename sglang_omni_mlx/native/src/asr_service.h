@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "form.h"
+#include "realtime.h"
 #include "worker.h"
 
 struct mg_context;
@@ -63,6 +64,14 @@ std::optional<int> IntegerField(const FormFields &form,
                                 const std::string &name);
 std::optional<float> NumberField(const FormFields &form,
                                  const std::string &name);
+
+// Builds the session of one realtime socket around the socket's sender.
+using RealtimeFactory =
+    std::function<std::shared_ptr<qwen3_asr::RealtimeConnection>(
+        qwen3_asr::RealtimeConnection::Sender)>;
+
+// Serves the realtime API on /v1/realtime; factory must outlive the server.
+void AddRealtimeHandler(mg_context *context, const RealtimeFactory &factory);
 
 // Runs the server for the kind --model-kind names (the first by default)
 // until it is stopped; returns the exit code.

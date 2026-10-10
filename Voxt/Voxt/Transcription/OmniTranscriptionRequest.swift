@@ -6,6 +6,7 @@ nonisolated enum OmniASRModelKind: String, Sendable, CaseIterable {
     case whisper
     case sileroVAD = "silero_vad"
     case sortformer = "sortformer"
+    case mossTranscribeDiarize = "moss_transcribe_diarize"
     case cohereTranscribe = "cohere_transcribe"
 }
 
@@ -47,9 +48,31 @@ nonisolated struct OmniGenerationMetadata: Sendable, Equatable {
     let hitLengthLimit: Bool
 }
 
+/// A timestamped speaker segment, for models that diarize (MOSS-Transcribe-Diarize).
+nonisolated struct OmniSpeakerSegment: Sendable, Equatable {
+    let startSeconds: Double
+    let endSeconds: Double
+    /// Empty when the model output carried no speaker segments.
+    let speakerID: String
+    let text: String
+
+    /// The server's segment objects; malformed entries are dropped.
+    static func parse(_ value: Any?) -> [OmniSpeakerSegment] {
+        (value as? [[String: Any]] ?? []).compactMap { segment in
+            guard let start = (segment["start"] as? NSNumber)?.doubleValue,
+                  let end = (segment["end"] as? NSNumber)?.doubleValue,
+                  let speakerID = segment["speaker"] as? String,
+                  let text = segment["text"] as? String
+            else { return nil }
+            return OmniSpeakerSegment(startSeconds: start, endSeconds: end, speakerID: speakerID, text: text)
+        }
+    }
+}
+
 nonisolated struct OmniTranscriptionResult: Sendable, Equatable {
     let text: String
     var generationMetadata: OmniGenerationMetadata? = nil
+    var segments: [OmniSpeakerSegment] = []
 }
 
 nonisolated enum OmniTranscriptionError: LocalizedError, Equatable {
@@ -212,7 +235,10 @@ nonisolated struct OmniTranscriptionStreamParser {
         case "transcript.text.delta":
             return event["delta"] as? String
         case "transcript.text.done":
-            var result = OmniTranscriptionResult(text: event["text"] as? String ?? "")
+            var result = OmniTranscriptionResult(
+                text: event["text"] as? String ?? "",
+                segments: OmniSpeakerSegment.parse(event["segments"])
+            )
             if let metadata = event["generation_metadata"] as? [String: Any] {
                 guard let count = metadata["generated_token_count"] as? Int,
                       let finishReason = metadata["finish_reason"] as? String

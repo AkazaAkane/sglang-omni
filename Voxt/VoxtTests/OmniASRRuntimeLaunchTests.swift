@@ -49,6 +49,10 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
             "/opt/voxt/bin/cohere_transcribe_server"
         )
         XCTAssertEqual(OmniASRBackend.modelKindsByRepo["beshkenadze/cohere-transcribe-03-2026-mlx-fp16"], .cohereTranscribe)
+        XCTAssertEqual(
+            OmniASRBackend.runtimeExecutable(for: .mossTranscribeDiarize, qwenRuntime: qwenRuntime).path,
+            "/opt/voxt/bin/moss_transcribe_diarize_server"
+        )
     }
 
     /// Every Qwen3-ASR checkpoint the native runtime is checked against runs on it;

@@ -1090,6 +1090,18 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
                 qwenUsesAutomaticLanguageProtocol: language == nil,
                 mossVisibleOutputMode: nil
             )
+        case .nativeStreamingLive where runtime.kind == .mossTranscribeDiarize:
+            let inferenceConfiguration = resolvedInferenceConfiguration(for: .intermediate)
+            return MLXMeetingNativeStreamingConfiguration(
+                session: try await OmniNativeStreamingSession.moss(
+                    runtime: runtime,
+                    prompt: inferenceConfiguration.mossPrompt
+                ),
+                liveMode: liveMode,
+                qwenUsesAutomaticLanguageProtocol: false,
+                // As on the Swift backend: the live overlay strips MOSS tags.
+                mossVisibleOutputMode: .plainText
+            )
         default:
             throw NSError(
                 domain: "Voxt.Meeting.NativeMLX",
@@ -1175,6 +1187,14 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
             }
             releaseNativeLiveSession(cancelSession: true)
             nativeQwenLiveUsesAutomaticLanguageProtocol = language == nil
+        case .nativeStreamingLive where runtime.kind == .mossTranscribeDiarize:
+            let prompt = resolvedInferenceConfiguration(for: .intermediate).mossPrompt
+            session = try await OmniNativeStreamingSession.moss(runtime: runtime, prompt: prompt)
+            guard revision == sessionRevision, isRecording, activeLiveMode == mode else {
+                session.cancel()
+                return false
+            }
+            releaseNativeLiveSession(cancelSession: true)
         default:
             return false
         }

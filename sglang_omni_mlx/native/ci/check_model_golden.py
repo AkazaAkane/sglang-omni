@@ -7,12 +7,12 @@
 
 Like check_golden.py, with the same per-chip golden outputs and tolerance, for a
 model served by its own binary. The golden file also names the parity tool
-(whisper_transcribe, ...), its request flags, the language each clip language
-is sent with (a user with that main language), and optionally the flags Voxt
-adds for clips past some duration. A flag given as {"model": repo} is that
-provisioned model's directory. Every corpus clip (or, with
-clips_over_seconds, every clip longer than that) is transcribed, one tool run
-per language sent and length.
+(whisper_transcribe, ...), its request flags (a true one passed bare, a false
+one left out), the language each clip language is sent with (a user with that
+main language), and optionally the flags Voxt adds for clips past some
+duration. A flag given as {"model": repo} is that provisioned model's
+directory. Every corpus clip (or, with clips_over_seconds, every clip longer
+than that) is transcribed, one tool run per language sent and length.
 """
 
 from __future__ import annotations
@@ -29,18 +29,21 @@ class ModelReference(TypedDict):
     model: str
 
 
-RequestValue = str | int | float | ModelReference
+RequestValue = bool | str | int | float | ModelReference
 
 
 def request_flags(data_root: Path, request: dict[str, RequestValue]) -> list[str]:
     flags = []
     for field, value in request.items():
-        argument = (
-            model_directory(data_root, value["model"])
-            if isinstance(value, dict)
-            else value
-        )
-        flags += [f"--{field.replace('_', '-')}", str(argument)]
+        option = f"--{field.replace('_', '-')}"
+        if value is True:
+            flags.append(option)
+        elif value is False:
+            pass
+        elif isinstance(value, dict):
+            flags += [option, str(model_directory(data_root, value["model"]))]
+        else:
+            flags += [option, str(value)]
     return flags
 
 

@@ -3,16 +3,12 @@
 // qwen3_asr (the API of sglang_omni_mlx.qwen3_asr.server, with the realtime
 // API on /v1/realtime), silero_vad (vad_service.h's API, no transcriptions) or
 // sortformer (sortformer_service.h's API, no transcriptions).
-#include <iostream>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <typeinfo>
 
 #include "asr_service.h"
-#include "civetweb.h"
-#include "nlohmann/json.hpp"
 #include "realtime.h"
 #include "sortformer_service.h"
 #include "vad_service.h"
@@ -21,11 +17,6 @@ namespace {
 
 using qwen3_asr::AudioLayout;
 using qwen3_asr::TranscriptionOptions;
-
-struct SocketState {
-  std::shared_ptr<qwen3_asr::RealtimeSession> session;
-  std::string fragments;
-};
 
 class Qwen3ASRModel : public asr_service::ServedModel {
 public:
@@ -69,84 +60,18 @@ public:
 
   void AddHandlers(mg_context *context,
                    qwen3_asr::TranscriptionWorker &worker) override {
-    worker_ = &worker;
-    mg_set_websocket_handler(context, "/v1/realtime", nullptr, SocketReady,
-                             SocketData, SocketClosed, this);
+    realtime_sessions_ = [this,
+                          &worker](qwen3_asr::RealtimeSession::Sender sender) {
+      return std::make_shared<qwen3_asr::RealtimeSession>(
+          worker, transcriber_, realtime_, std::move(sender));
+    };
+    asr_service::AddRealtimeHandler(context, realtime_sessions_);
   }
 
 private:
-  static void SocketReady(mg_connection *connection, void *data) {
-    const auto *model = static_cast<Qwen3ASRModel *>(data);
-    auto *socket = new SocketState();
-    socket->session = std::make_shared<qwen3_asr::RealtimeSession>(
-        *model->worker_, model->transcriber_, model->realtime_,
-        [connection](const std::string &text) {
-          mg_lock_connection(connection);
-          const int written = mg_websocket_write(
-              connection, MG_WEBSOCKET_OPCODE_TEXT, text.data(), text.size());
-          mg_unlock_connection(connection);
-          return written > 0;
-        });
-    mg_set_user_connection_data(connection, socket);
-  }
-
-  static int SocketData(mg_connection *connection, int bits, char *data,
-                        size_t length, void *) {
-    auto *socket =
-        static_cast<SocketState *>(mg_get_user_connection_data(connection));
-    const int opcode = bits & 0x0F;
-    if (socket == nullptr || opcode == MG_WEBSOCKET_OPCODE_CONNECTION_CLOSE) {
-      return 0;
-    } else if (opcode == MG_WEBSOCKET_OPCODE_PING) {
-      mg_lock_connection(connection);
-      mg_websocket_write(connection, MG_WEBSOCKET_OPCODE_PONG, data, length);
-      mg_unlock_connection(connection);
-      return 1;
-    } else if (opcode == MG_WEBSOCKET_OPCODE_PONG) {
-      return 1;
-    } else {
-    }
-    socket->fragments.append(data, length);
-    if ((bits & 0x80) == 0) {
-      return 1;
-    } else {
-    }
-    const std::string message = std::move(socket->fragments);
-    socket->fragments.clear();
-    nlohmann::json event;
-    try {
-      event = nlohmann::json::parse(message);
-    } catch (const nlohmann::json::exception &) {
-      socket->session->SendError("invalid_request_error", "invalid_json",
-                                 "Events must be JSON.");
-      return 1;
-    }
-    if (!event.is_object()) {
-      return 0;
-    } else {
-    }
-    try {
-      return socket->session->Handle(event) ? 1 : 0;
-    } catch (const std::exception &error) {
-      // Note (Jiaxin Deng): log the type alone, never audio or text.
-      std::cerr << "realtime session failed: " << typeid(error).name() << "\n";
-      return 0;
-    }
-  }
-
-  static void SocketClosed(const mg_connection *connection, void *) {
-    auto *socket =
-        static_cast<SocketState *>(mg_get_user_connection_data(connection));
-    if (socket != nullptr) {
-      socket->session->Close();
-      delete socket;
-    } else {
-    }
-  }
-
   qwen3_asr::Qwen3ASRTranscriber transcriber_;
   const qwen3_asr::RealtimeSettings realtime_;
-  qwen3_asr::TranscriptionWorker *worker_ = nullptr;
+  asr_service::RealtimeFactory realtime_sessions_;
 };
 
 class SileroVADModel : public asr_service::ServedModel {

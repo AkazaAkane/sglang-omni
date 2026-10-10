@@ -49,7 +49,9 @@ FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb)
 
 add_library(qwen3_asr STATIC
   src/audio.cpp
+  src/layers.cpp
   src/model.cpp
+  src/qwen3_decoder.cpp
   src/tokenizer.cpp
   src/transcriber.cpp
   src/worker.cpp
@@ -142,3 +144,19 @@ set_target_properties(cohere_transcribe_server cohere_transcribe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS cohere_transcribe_server cohere_transcribe RUNTIME DESTINATION bin)
+# Note (Dayuxiaoshui): MOSS-Transcribe-Diarize on Qwen3-ASR's decoder, WAV and
+# form handling, with its own server and parity tool.
+add_library(moss_asr STATIC src/moss_model.cpp src/moss_transcriber.cpp src/moss_realtime.cpp)
+target_link_libraries(moss_asr PUBLIC qwen3_asr)
+target_compile_options(moss_asr PRIVATE -Wall -Wextra)
+# Note (Dayuxiaoshui): a long recording's cut is the minimum of energy sums,
+# which fused multiply-adds would round differently from Voxt's Swift.
+set_source_files_properties(src/moss_transcriber.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+add_executable(moss_transcribe_diarize_server src/moss_transcribe_diarize_server.cpp)
+target_link_libraries(moss_transcribe_diarize_server PRIVATE moss_asr asr_service)
+add_executable(moss_transcribe tools/moss_transcribe.cpp)
+target_link_libraries(moss_transcribe PRIVATE moss_asr)
+set_target_properties(moss_transcribe_diarize_server moss_transcribe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS moss_transcribe_diarize_server moss_transcribe RUNTIME DESTINATION bin)

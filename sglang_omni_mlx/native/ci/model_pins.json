@@ -65,5 +65,17 @@
         "vocab.json": "8f680bba319e01a653d2e8a5dbc17a9157179e0576e6ce74ce0c06356c6e24f9"
       }
     }
+  },
+  "OpenMOSS-Team/MOSS-Transcribe-Diarize": {
+    "revision": "704aa4a9c304e8520be88901e0d1960158ef5b15",
+    "files": {
+      "config.json": "2b2b7a6e61334152bdd7ecf8a4da3073b4940a097e193d1d2b22093e77535234",
+      "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+      "model-00000-of-00001.safetensors": "9a0ceb4ab7330357db3ff583dba8d83625d5b733b00e1d55d6970e11b07026c4",
+      "processor_config.json": "a978c2dd54a65b576c3dae4b654fe9bcbac1184c6db2df0afb2c90fcdc872ae7",
+      "tokenizer.json": "bcf03774334462d6e34b5005cb11120a62275f146ee2953e68731ecdbce84fbb",
+      "tokenizer_config.json": "61d04c96104177240688396655ae3f7cf38ce2ea036db867a1d2b6883e27c3d5",
+      "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    }
   }
 }

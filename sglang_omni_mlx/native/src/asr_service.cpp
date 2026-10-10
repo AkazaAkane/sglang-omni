@@ -61,9 +61,18 @@ int HandleModels(mg_connection *connection, void *data) {
                                            {"object", "model"}}})}});
 }
 
+// Speaker segments, for models that produce them.
+void AddSegments(Json &body, const TranscriptionResult &result) {
+  if (!result.segments.empty()) {
+    body["segments"] = qwen3_asr::SpeakerSegmentsJson(result.segments);
+  } else {
+  }
+}
+
 Json DoneEvent(const TranscriptionResult &result,
                bool include_generation_metadata) {
   Json event = {{"type", "transcript.text.done"}, {"text", result.text}};
+  AddSegments(event, result);
   if (include_generation_metadata) {
     event["generation_metadata"] = {
         {"generated_token_count", result.generated_token_count},
@@ -134,7 +143,10 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
                         });
   if (!stream) {
     try {
-      return WriteJson(connection, 200, {{"text", future.get().text}});
+      const TranscriptionResult result = future.get();
+      Json body = {{"text", result.text}};
+      AddSegments(body, result);
+      return WriteJson(connection, 200, body);
     } catch (...) {
       return WriteJson(connection, 500, {{"detail", "Transcription failed."}});
     }
@@ -162,6 +174,78 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
   }
   WriteSse(connection, "[DONE]");
   return 200;
+}
+
+struct SocketState {
+  std::shared_ptr<qwen3_asr::RealtimeConnection> session;
+  std::string fragments;
+};
+
+void SocketReady(mg_connection *connection, void *data) {
+  const auto *factory = static_cast<const RealtimeFactory *>(data);
+  auto *socket = new SocketState();
+  socket->session = (*factory)([connection](const std::string &text) {
+    mg_lock_connection(connection);
+    const int written = mg_websocket_write(connection, MG_WEBSOCKET_OPCODE_TEXT,
+                                           text.data(), text.size());
+    mg_unlock_connection(connection);
+    return written > 0;
+  });
+  mg_set_user_connection_data(connection, socket);
+}
+
+int SocketData(mg_connection *connection, int bits, char *data, size_t length,
+               void *) {
+  auto *socket =
+      static_cast<SocketState *>(mg_get_user_connection_data(connection));
+  const int opcode = bits & 0x0F;
+  if (socket == nullptr || opcode == MG_WEBSOCKET_OPCODE_CONNECTION_CLOSE) {
+    return 0;
+  } else if (opcode == MG_WEBSOCKET_OPCODE_PING) {
+    mg_lock_connection(connection);
+    mg_websocket_write(connection, MG_WEBSOCKET_OPCODE_PONG, data, length);
+    mg_unlock_connection(connection);
+    return 1;
+  } else if (opcode == MG_WEBSOCKET_OPCODE_PONG) {
+    return 1;
+  } else {
+  }
+  socket->fragments.append(data, length);
+  if ((bits & 0x80) == 0) {
+    return 1;
+  } else {
+  }
+  const std::string message = std::move(socket->fragments);
+  socket->fragments.clear();
+  nlohmann::json event;
+  try {
+    event = nlohmann::json::parse(message);
+  } catch (const nlohmann::json::exception &) {
+    socket->session->SendError("invalid_request_error", "invalid_json",
+                               "Events must be JSON.");
+    return 1;
+  }
+  if (!event.is_object()) {
+    return 0;
+  } else {
+  }
+  try {
+    return socket->session->Handle(event) ? 1 : 0;
+  } catch (const std::exception &error) {
+    // Note (Jiaxin Deng): log the type alone, never audio or text.
+    std::cerr << "realtime session failed: " << typeid(error).name() << "\n";
+    return 0;
+  }
+}
+
+void SocketClosed(const mg_connection *connection, void *) {
+  auto *socket =
+      static_cast<SocketState *>(mg_get_user_connection_data(connection));
+  if (socket != nullptr) {
+    socket->session->Close();
+    delete socket;
+  } else {
+  }
 }
 
 std::string RandomHex(int length) {
@@ -355,6 +439,12 @@ std::optional<float> NumberField(const FormFields &form,
   } else {
   }
   return value;
+}
+
+void AddRealtimeHandler(mg_context *context, const RealtimeFactory &factory) {
+  mg_set_websocket_handler(context, "/v1/realtime", nullptr, SocketReady,
+                           SocketData, SocketClosed,
+                           const_cast<RealtimeFactory *>(&factory));
 }
 
 int Serve(int argc, char **argv, const std::vector<ServedKind> &kinds) {
