@@ -76,6 +76,26 @@ result = resp.json()
 print(result["choices"][0]["message"]["content"])
 ```
 
+Messages may also use OpenAI content parts: `text`, `image_url`, `video_url`,
+`audio_url`, and `input_audio` (base64 `wav` or `mp3`). A `url` can be an
+HTTP(S) URL, a data URL, or a local path visible to the server:
+
+```json
+{
+  "role": "user",
+  "content": [
+    {"type": "image_url", "image_url": {"url": "tests/data/cars.jpg"}},
+    {"type": "text", "text": "How many cars are there in the picture?"}
+  ]
+}
+```
+
+Media parts keep their message and their place in it across conversation turns.
+With the top-level `images`, `videos`, or `audios` fields as well, the top-level
+media follow the parts of the final user message. Any other part type is
+rejected with a 400. The optional `detail` field does not override the model's
+image preprocessing settings.
+
 ### Audio and Image Input
 
 Send an audio file together with an image. The audio contains the spoken question ("How many cars are there in the picture?") and the model answers based on both inputs.
