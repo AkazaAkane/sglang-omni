@@ -480,6 +480,28 @@ extension OmniASRRuntime {
         )
     }
 
+    /// Whisper Final as MLXAudio decoded it: the server cuts the recording into
+    /// 30 s windows and decodes each with the same budget, so one request
+    /// carries the whole recording.
+    nonisolated static func whisperFinalRequest(
+        samples: [Float],
+        sampleRate: Int,
+        language: String?,
+        maxNewTokens: Int,
+        temperature: Float
+    ) -> OmniTranscriptionRequest {
+        OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: language,
+            prompt: nil,
+            maxNewTokens: maxNewTokens,
+            stopAtEndOfText: false,
+            stopOnTokenLoop: false,
+            temperature: temperature
+        )
+    }
+
     func transcribeQwenFinal(
         samples: [Float],
         sampleRate: Int,

@@ -57,3 +57,10 @@ def test_an_empty_golden_file_fails() -> None:
     assert check_golden.check(golden(0), "Apple M5", {}, METRICS)[1] == [
         "the golden file has no clips"
     ]
+
+
+def test_a_pending_baseline_reports_no_delta() -> None:
+    pending = {**golden(), "baseline": {"source": "pending", **METRICS}}
+    lines, failures = check_golden.check(pending, "Apple M5", results(0), METRICS)
+    assert failures == []
+    assert "| wer_en | pending | 3.00% | n/a |" in lines

@@ -3,6 +3,7 @@ import Foundation
 /// Wire formats and request planning for the local Omni server.
 nonisolated enum OmniASRModelKind: String, Sendable, CaseIterable {
     case qwen3ASR = "qwen3_asr"
+    case whisper
     case sileroVAD = "silero_vad"
     case sortformer = "sortformer"
 }
@@ -18,6 +19,8 @@ nonisolated struct OmniTranscriptionRequest: Sendable, Equatable {
     var includeGenerationMetadata = false
     /// Prompt audio layout the server builds; nil keeps the reference layout.
     var audioLayout: String? = nil
+    /// Sampling temperature; nil or zero decodes greedily.
+    var temperature: Float? = nil
 }
 
 nonisolated struct OmniGenerationMetadata: Sendable, Equatable {
@@ -125,6 +128,9 @@ nonisolated enum OmniMultipartBody {
         }
         if let audioLayout = request.audioLayout {
             fields.append(("audio_layout", audioLayout))
+        }
+        if let temperature = request.temperature {
+            fields.append(("temperature", String(temperature)))
         }
         var body = Data()
         for (name, value) in fields {

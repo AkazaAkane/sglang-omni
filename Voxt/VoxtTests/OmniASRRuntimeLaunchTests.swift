@@ -31,10 +31,23 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
         XCTAssertEqual(settings?.runtimeExecutable, URL(fileURLWithPath: "/opt/qwen3_asr_server"))
     }
 
+    func testEachKindRunsItsOwnServerBesideTheQwenRuntime() {
+        let qwenRuntime = URL(fileURLWithPath: "/opt/voxt/bin/qwen3_asr_server")
+
+        XCTAssertEqual(OmniASRBackend.runtimeExecutable(for: .qwen3ASR, qwenRuntime: qwenRuntime), qwenRuntime)
+        XCTAssertEqual(OmniASRBackend.runtimeExecutable(for: .sileroVAD, qwenRuntime: qwenRuntime), qwenRuntime)
+        XCTAssertEqual(OmniASRBackend.runtimeExecutable(for: .sortformer, qwenRuntime: qwenRuntime), qwenRuntime)
+        XCTAssertEqual(
+            OmniASRBackend.runtimeExecutable(for: .whisper, qwenRuntime: qwenRuntime).path,
+            "/opt/voxt/bin/whisper_server"
+        )
+        XCTAssertEqual(OmniASRBackend.modelKindsByRepo["mlx-community/whisper-large-v3-turbo"], .whisper)
+    }
+
     /// Every Qwen3-ASR checkpoint the native runtime is checked against runs on it;
     /// other sizes and quantizations keep the Swift backend.
     func testQwen3ASRCheckpointsWithGoldenOutputsRunOnTheNativeRuntime() {
-        XCTAssertEqual(OmniASRBackend.modelKindsByRepo, [
+        XCTAssertEqual(OmniASRBackend.modelKindsByRepo.filter { $0.value == .qwen3ASR }, [
             "mlx-community/Qwen3-ASR-0.6B-4bit": .qwen3ASR,
             "mlx-community/Qwen3-ASR-1.7B-6bit": .qwen3ASR,
             "mlx-community/Qwen3-ASR-1.7B-8bit": .qwen3ASR,

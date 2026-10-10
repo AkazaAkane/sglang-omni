@@ -37,8 +37,9 @@ public:
   // Writes one serialized event; false once the socket is gone.
   using Sender = std::function<bool(const std::string &)>;
 
-  RealtimeSession(TranscriptionWorker &worker, RealtimeSettings settings,
-                  Sender sender);
+  RealtimeSession(TranscriptionWorker &worker,
+                  const Qwen3ASRTranscriber &transcriber,
+                  RealtimeSettings settings, Sender sender);
 
   // Applies one client event; false once the session has completed.
   bool Handle(const nlohmann::json &message);
@@ -69,12 +70,15 @@ private:
                                     long end_sample) const;
   // Builds the request for a decode of segment and counts it.
   TranscriptionOptions DecodeOptions(Segment &segment);
+  Transcription Decode(std::vector<float> samples,
+                       TranscriptionOptions options) const;
   void ApplyResult(Segment &segment, const TranscriptionResult &result);
   void MaybeStartRefresh();
   void FinalizeThrough(long end_sample);
   void ReportDecodeFailure(std::exception_ptr error);
 
   TranscriptionWorker &worker_;
+  const Qwen3ASRTranscriber &transcriber_;
   const RealtimeSettings settings_;
   Sender sender_;
   CancelFlag cancel_ = NewCancelFlag();

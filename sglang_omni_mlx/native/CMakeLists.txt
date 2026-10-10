@@ -74,10 +74,13 @@ target_include_directories(sortformer PUBLIC src)
 target_link_libraries(sortformer PUBLIC mlx nlohmann_json::nlohmann_json)
 target_compile_options(sortformer PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
-add_executable(qwen3_asr_server src/server.cpp src/http.cpp src/vad_service.cpp
+add_library(asr_service STATIC src/asr_service.cpp src/http.cpp)
+target_link_libraries(asr_service PUBLIC qwen3_asr civetweb-c-library)
+target_compile_options(asr_service PRIVATE -Wall -Wextra)
+
+add_executable(qwen3_asr_server src/server.cpp src/vad_service.cpp
   src/sortformer_service.cpp)
-target_link_libraries(qwen3_asr_server PRIVATE qwen3_asr silero_vad sortformer
-  civetweb-c-library)
+target_link_libraries(qwen3_asr_server PRIVATE asr_service silero_vad sortformer)
 
 add_executable(silero_vad_probe tools/silero_vad_probe.cpp)
 target_link_libraries(silero_vad_probe PRIVATE silero_vad qwen3_asr)
@@ -103,3 +106,22 @@ foreach(runtime_file ${MLX_RUNTIME_FILES})
   file(REAL_PATH "${runtime_file}" resolved_file)
   install(FILES "${resolved_file}" DESTINATION bin)
 endforeach()
+
+# Note (khazic): Whisper: whisper_server, with qwen3_asr_server's API without realtime, and
+# its parity tool. Both reuse the WAV decoder, form parser and byte-level
+# tokenizer above.
+add_library(swift_port STATIC src/swift_port.cpp)
+target_link_libraries(swift_port PUBLIC mlx)
+add_library(whisper_asr STATIC src/whisper_model.cpp src/whisper_transcriber.cpp)
+target_link_libraries(whisper_asr PUBLIC qwen3_asr swift_port)
+# Note (khazic): CPU float math rounds each operation, as Swift does: no fused multiply-add.
+target_compile_options(swift_port PRIVATE -Wall -Wextra -ffp-contract=off)
+target_compile_options(whisper_asr PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(whisper_server src/whisper_server.cpp)
+target_link_libraries(whisper_server PRIVATE whisper_asr asr_service)
+add_executable(whisper_transcribe tools/whisper_transcribe.cpp)
+target_link_libraries(whisper_transcribe PRIVATE whisper_asr)
+set_target_properties(whisper_server whisper_transcribe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS whisper_server whisper_transcribe RUNTIME DESTINATION bin)

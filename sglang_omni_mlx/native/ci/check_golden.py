@@ -16,6 +16,10 @@ import subprocess
 import sys
 import unicodedata
 from pathlib import Path
+from typing import Callable
+
+# (runtime bin, data root, golden file, manifest of the clips to run) -> outputs
+TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]]
 
 import sortformer_golden
 import vad_golden
@@ -105,6 +109,10 @@ def transcribe(
     return results
 
 
+def model_directory(data_root: Path, repo: str) -> Path:
+    return data_root / "models" / repo.replace("/", "_")
+
+
 def chip() -> str:
     return subprocess.run(
         ["sysctl", "-n", "machdep.cpu.brand_string"],
@@ -183,14 +191,18 @@ def check(
         "|---|---|---|---|",
     ]
     for name, value in metrics.items():
-        baseline = golden["baseline"][name]
-        lines.append(
-            f"| {name} | {baseline:.2%} | {value:.2%} | {(value - baseline) * 100:+.2f} pp |"
-        )
+        if golden["baseline"].get("source") == "pending":
+            lines.append(f"| {name} | pending | {value:.2%} | n/a |")
+        else:
+            baseline = golden["baseline"][name]
+            lines.append(
+                f"| {name} | {baseline:.2%} | {value:.2%} | {(value - baseline) * 100:+.2f} pp |"
+            )
     return lines, failures
 
 
-def main() -> None:
+def run(transcribe_corpus: TranscribeCorpus) -> None:
+    """Checks, records or imports one golden file; transcribe_corpus runs the model."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime-bin", type=Path)
     parser.add_argument("--data-root", type=Path)
@@ -238,13 +250,8 @@ def main() -> None:
         )
     else:
         pass
-    model_directory = arguments.data_root / "models" / golden["model"].replace("/", "_")
-    clips = [
-        arguments.data_root / "corpus" / "v1" / "clips" / f"{clip_id}.wav"
-        for clip_id in manifest
-    ]
-    results = transcribe(
-        arguments.runtime_bin, model_directory, clips, golden["request"]
+    results = transcribe_corpus(
+        arguments.runtime_bin, arguments.data_root, golden, manifest
     )
     metrics = quality(
         manifest, {clip_id: row["text"] for clip_id, row in results.items()}
@@ -278,5 +285,19 @@ def main() -> None:
     report(*check(golden, device, results, metrics))
 
 
+def transcribe_qwen3_asr(
+    runtime_bin: Path, data_root: Path, golden: dict, manifest: dict[str, dict]
+) -> dict[str, dict]:
+    clips = [
+        data_root / "corpus" / "v1" / "clips" / f"{clip_id}.wav" for clip_id in manifest
+    ]
+    return transcribe(
+        runtime_bin,
+        model_directory(data_root, golden["model"]),
+        clips,
+        golden["request"],
+    )
+
+
 if __name__ == "__main__":
-    main()
+    run(transcribe_qwen3_asr)

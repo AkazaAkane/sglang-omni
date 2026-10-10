@@ -31,6 +31,24 @@ final class OmniTranscriptionRequestTests: XCTestCase {
         XCTAssertEqual(fieldValue("include_generation_metadata", in: body), "true")
     }
 
+    func testWhisperFinalRequestsCarryTheBudgetLanguageAndTemperature() {
+        let request = OmniASRRuntime.whisperFinalRequest(
+            samples: [0, 0.1],
+            sampleRate: 16000,
+            language: "en",
+            maxNewTokens: 320,
+            temperature: 0
+        )
+        let body = OmniMultipartBody.transcription(request, modelName: "m", boundary: "b")
+
+        XCTAssertEqual(fieldValue("language", in: body), "en")
+        XCTAssertEqual(fieldValue("max_new_tokens", in: body), "320")
+        XCTAssertEqual(fieldValue("temperature", in: body), "0.0")
+        XCTAssertNil(fieldValue("audio_layout", in: body))
+        XCTAssertNil(fieldValue("stop_at_end_of_text", in: body))
+        XCTAssertNil(fieldValue("include_generation_metadata", in: body))
+    }
+
     func testRequestsWithoutALayoutLeaveTheServerDefault() {
         let request = OmniTranscriptionRequest(
             samples: [0],

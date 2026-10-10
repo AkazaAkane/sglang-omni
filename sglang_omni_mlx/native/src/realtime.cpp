@@ -181,8 +181,10 @@ std::string JoinTranscriptParts(const std::vector<std::string> &parts) {
 }
 
 RealtimeSession::RealtimeSession(TranscriptionWorker &worker,
+                                 const Qwen3ASRTranscriber &transcriber,
                                  RealtimeSettings settings, Sender sender)
-    : worker_(worker), settings_(settings), sender_(std::move(sender)) {}
+    : worker_(worker), transcriber_(transcriber), settings_(settings),
+      sender_(std::move(sender)) {}
 
 void RealtimeSession::Send(nlohmann::ordered_json event) {
   std::lock_guard<std::mutex> lock(send_mutex_);
@@ -325,14 +327,22 @@ TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment) {
                           !segment.transcript.empty() &&
                           segment.language.has_value();
   if (use_prefix) {
-    auto [ids, text] = worker_.transcriber().RetainedPrefix(
-        segment.transcript, kPrefixRollbackTokenCount);
+    auto [ids, text] = transcriber_.RetainedPrefix(segment.transcript,
+                                                   kPrefixRollbackTokenCount);
     options.prefix_token_ids = std::move(ids);
     options.prefix_text = std::move(text);
   } else {
   }
   segment.decode_count += 1;
   return options;
+}
+
+Transcription RealtimeSession::Decode(std::vector<float> samples,
+                                      TranscriptionOptions options) const {
+  return [&transcriber = transcriber_, samples = std::move(samples),
+          options = std::move(options)](const std::atomic<bool> &cancel) {
+    return transcriber.Transcribe(samples, options, cancel);
+  };
 }
 
 void RealtimeSession::ApplyResult(Segment &segment,
@@ -391,7 +401,7 @@ void RealtimeSession::MaybeStartRefresh() {
   }
   std::weak_ptr<RealtimeSession> weak_self = weak_from_this();
   worker_.Submit(
-      std::move(samples), std::move(options), cancel_,
+      Decode(std::move(samples), std::move(options)), cancel_,
       [weak_self, segment_id](std::optional<TranscriptionResult> result,
                               std::exception_ptr error) {
         const std::shared_ptr<RealtimeSession> self = weak_self.lock();
@@ -465,8 +475,8 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
         options = DecodeOptions(segment);
       }
       try {
-        const TranscriptionResult result =
-            worker_.Transcribe(std::move(samples), std::move(options), cancel_);
+        const TranscriptionResult result = worker_.Transcribe(
+            Decode(std::move(samples), std::move(options)), cancel_);
         ApplyResult(segment, result);
         text = result.text;
       } catch (...) {
