@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "nlohmann/json.hpp"
+#include "npz.h"
 #include "swift_port.h"
 
 namespace whisper {
@@ -134,16 +135,20 @@ WhisperModel::WhisperModel(const std::filesystem::path &model_directory)
     }
   }
   std::sort(weight_files.begin(), weight_files.end());
-  if (weight_files.empty()) {
+  // Note (khazic): mlx-community converted the older checkpoints to weights.npz
+  // only.
+  if (!weight_files.empty()) {
+    for (const auto &path : weight_files) {
+      auto [loaded, metadata] = mx::load_safetensors(path.string());
+      for (auto &[name, array] : loaded) {
+        weights_.insert_or_assign(name, array);
+      }
+    }
+  } else if (std::filesystem::exists(model_directory / "weights.npz")) {
+    weights_ = npz::Load(model_directory / "weights.npz");
+  } else {
     throw std::runtime_error("no Whisper weights in " +
                              model_directory.string());
-  } else {
-  }
-  for (const auto &path : weight_files) {
-    auto [loaded, metadata] = mx::load_safetensors(path.string());
-    for (auto &[name, array] : loaded) {
-      weights_.insert_or_assign(name, array);
-    }
   }
   weights_.erase("alignment_heads");
   // Note (khazic): the checkpoint leaves out the fixed encoder positions.

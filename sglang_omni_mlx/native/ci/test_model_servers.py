@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import http.client
 import json
+import struct
 import subprocess
 import time
 import uuid
+import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -25,6 +27,7 @@ pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
 )
 WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
+WHISPER_LARGE_V3_REPO = "mlx-community/whisper-large-v3-mlx"
 COHERE_REPO = "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
 VAD_REPO = "mlx-community/silero-vad-v6"
 # Voxt's settings for cutting long audio at speech.
@@ -102,6 +105,45 @@ def test_whisper_plain_request_returns_json_text(whisper_server: ModelServer) ->
         200,
         {"text": "互联网结合了大众传播和人际传播的要素"},
     )
+
+
+def test_whisper_large_v3_server_transcribes() -> None:
+    server = ModelServer("whisper_server", "whisper", WHISPER_LARGE_V3_REPO)
+    try:
+        status, body = server.post_form(
+            {"language": "en", "max_new_tokens": "128"}, clip("0006_en_short")
+        )
+        assert status == 200
+        assert json.loads(body)["text"].strip()
+    finally:
+        server.stop()
+
+
+def corrupt_npz(path: Path, field: str) -> None:
+    """A stored one-member archive whose directory lies about a size."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("w.npy", b"\0" * 64)
+    data = bytearray(path.read_bytes())
+    end = len(data) - 22
+    directory = struct.unpack_from("<I", data, end + 16)[0]
+    if field == "directory_offset":
+        struct.pack_into("<I", data, end + 16, len(data))
+    else:
+        struct.pack_into("<H", data, directory + 28, 0xFFFF)
+    path.write_bytes(bytes(data))
+
+
+@pytest.mark.parametrize("field", ["directory_offset", "name_length"])
+def test_whisper_corrupt_npz_fails_to_start(tmp_path: Path, field: str) -> None:
+    source = Path(DATA_ROOT) / "models" / WHISPER_LARGE_V3_REPO.replace("/", "_")
+    for item in source.iterdir():
+        if item.name != "weights.npz":
+            (tmp_path / item.name).symlink_to(item)
+    corrupt_npz(tmp_path / "weights.npz", field)
+    server = Server("whisper_server", "whisper", tmp_path)
+    assert server.ready["event"] == "failed"
+    assert "corrupt" in server.ready["reason"]
+    assert server.process.wait(timeout=30) != 0
 
 
 @pytest.mark.parametrize(

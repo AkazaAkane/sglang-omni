@@ -31,5 +31,22 @@
       "config.json": "9fe1befb9692a0d4135adadc33f8075ef6d350bd2391b88d750f2c233f97fa0b",
       "model.safetensors": "65b6c5f0293cbc44d109e58bef78b474d9c65dedbee814cf0b90ef5f0d9150ff"
     }
+  },
+  "mlx-community/whisper-large-v3-mlx": {
+    "revision": "49e6aa286ad60c14352c404340ded53710378a11",
+    "files": {
+      "config.json": "34982ce6ae286095000f82ae9583b3431639e8b092bf60c961f203745e6500e3",
+      "weights.npz": "05ff791ce3630fae47e7c51004e9666204d786246ec07cac6110af768099b40d"
+    },
+    "tokenizer": {
+      "repo": "openai/whisper-large-v3",
+      "revision": "06f233fe06e710322aca913c1bc4249a0d71fce1",
+      "files": {
+        "generation_config.json": "fbdfa70135de9b1d31553393f14e80aaeb1936ea36576b2ba864055943c09d23",
+        "merges.txt": "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6",
+        "tokenizer_config.json": "844b642c73a91359722f47b35705f7174686df33d252695d8572cf9ac03a6389",
+        "vocab.json": "e2aa043ef015641d363d8288e7c241c85e36a5c761fb303598e0710233344387"
+      }
+    }
   }
 }

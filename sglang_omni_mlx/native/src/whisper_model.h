@@ -39,8 +39,8 @@ struct DecoderLayerCache {
 
 class WhisperModel {
 public:
-  // Reads config.json and the *.safetensors weights of an mlx-community
-  // Whisper checkpoint.
+  // Reads config.json and the weights (*.safetensors, else weights.npz) of an
+  // mlx-community Whisper checkpoint.
   explicit WhisperModel(const std::filesystem::path &model_directory);
 
   const WhisperConfig &config() const { return config_; }

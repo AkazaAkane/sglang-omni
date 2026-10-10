@@ -42,6 +42,7 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
             "/opt/voxt/bin/whisper_server"
         )
         XCTAssertEqual(OmniASRBackend.modelKindsByRepo["mlx-community/whisper-large-v3-turbo"], .whisper)
+        XCTAssertEqual(OmniASRBackend.modelKindsByRepo["mlx-community/whisper-large-v3-mlx"], .whisper)
         XCTAssertEqual(
             OmniASRBackend.runtimeExecutable(for: .cohereTranscribe, qwenRuntime: qwenRuntime).path,
             "/opt/voxt/bin/cohere_transcribe_server"
