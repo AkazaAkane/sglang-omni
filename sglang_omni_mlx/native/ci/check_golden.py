@@ -237,6 +237,7 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
             json.loads,
             (CI_DIRECTORY / "corpus" / "manifest.jsonl").read_text().splitlines(),
         )
+        if row["duration"] > golden.get("clips_over_seconds", 0)
     }
     if golden.get("kind") == "silero_vad":
         report(

@@ -10,6 +10,7 @@ server. Other models keep their Swift backend.
 | `mlx-community/Qwen3-ASR-0.6B-4bit`, `mlx-community/Qwen3-ASR-1.7B-6bit`, `mlx-community/Qwen3-ASR-1.7B-8bit` | `qwen3_asr_server` | Final with context bias and language hint, Swift's audio layout and stop rules, 1200 s energy-cut chunks sharing one token budget, first detected language carried forward; live preview over the realtime socket, first decode after 100 ms of audio, then once a second |
 | `mlx-community/whisper-large-v3-turbo` | `whisper_server` | Final and batch preview with Voxt's language, token budget, temperature, and 30 s audio windows |
 | `mlx-community/silero-vad-v6` | `qwen3_asr_server --model-kind silero_vad` | Streaming speech probability per 512-sample chunk with one stream state per audio stream (`/v1/vad/stream`), and offline speech ranges with the meeting sensitivity profile's options (`/v1/vad/speech_timestamps`); one server shared by every detector, started on first use |
+| `beshkenadze/cohere-transcribe-03-2026-mlx-fp16` | `cohere_transcribe_server` | Final with Voxt's language, punctuation, and token budget; long recordings use Silero VAD when voice-activity segmentation is selected; live text uses batch preview |
 | `mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16` | `qwen3_asr_server --model-kind sortformer` | Meeting speaker analysis: Voxt's feed policy (4.96 s feeds, tails padded to one frame), one streaming state per contiguous run of audio (`/v1/diarization/stream`), `feed`'s threshold, merge gap and state limits, the state-size checks and the timestamp mapping; one server shared by every analysis, started on first use |
 
 ## Build and run
@@ -24,7 +25,8 @@ Voxt/backend/run_omni_dev.sh run
 `build` builds the runtime into `Voxt/build/omni-runtime` with
 `sglang_omni_mlx/native/scripts/build_runtime.sh`, then builds "Voxt Omni Dev".
 `bin/` holds `qwen3_asr_server`, `qwen3_asr_transcribe`, `whisper_server`,
-`whisper_transcribe`, and the pinned MLX library and Metal kernels next to them.
+`whisper_transcribe`, `cohere_transcribe_server`, `cohere_transcribe`, and the
+pinned MLX library and Metal kernels next to them.
 
 "Voxt Omni Dev" has its own bundle identifier. It runs without the sandbox so it
 can start the runtime, and it sees `~/.voxt-omni-dev` as its home, so its
@@ -68,6 +70,7 @@ and quitting stops it.
   - Silero VAD and Sortformer golden files hold the original Swift outputs; `vad_golden.py` and `sortformer_golden.py` check them with tolerances for MLX kernel differences.
 - The `Voxt Mac CI` workflow runs these on the repository's Apple Silicon runner, together with the server API tests and Voxt's Omni unit tests.
 - The Whisper check pins its checkpoint and tokenizer, runs all 392 frozen clips through `check_model_golden.py`, and tests the transcription server. Its golden keeps per-chip outputs with `check_golden.py`'s tolerance, and records the original Swift backend's error rates as its baseline.
+- The Cohere check pins its checkpoint and Silero VAD v6, runs the same frozen corpus through `check_model_golden.py`, and tests the server. Its golden keeps per-chip outputs with the same tolerance, and records the original Swift backend's error rates as its baseline; a second golden freezes the energy cut's multi-chunk path on the long clips.
 - Voxt's opt-in suites need the installed model and `VOXT_RUN_MODEL_TESTS=1`:
   - `OmniPhase1LifecycleTests`:
     - load/Final/unload rounds that must leave no process behind;
@@ -87,6 +90,7 @@ the `.xctestrun` file.
 
 - Greedy decoding only.
 - Whisper uses batch preview; its server has no realtime socket.
+- Cohere uses batch preview until a native streaming session is implemented.
 - The dev build is ad hoc signed without keychain access groups, so remote
   provider API keys may not persist in it.
 - The server accepts requests from any local client on its loopback port; it

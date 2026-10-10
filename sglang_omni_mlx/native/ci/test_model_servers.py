@@ -25,6 +25,17 @@ pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
 )
 WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
+COHERE_REPO = "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
+VAD_REPO = "mlx-community/silero-vad-v6"
+# Voxt's settings for cutting long audio at speech.
+VAD_FIELDS = {
+    "vad_threshold": "0.5",
+    "vad_min_speech_ms": "220",
+    "vad_min_silence_ms": "420",
+    "vad_speech_pad_ms": "180",
+    "vad_merge_gap_seconds": "1.0",
+    "vad_max_chunk_seconds": "24.0",
+}
 
 
 class ModelServer(Server):
@@ -202,13 +213,17 @@ def test_whisper_shutdown_reports_stopped() -> None:
     assert running.process.wait(timeout=10) == 0
 
 
-def test_whisper_server_serves_only_whisper() -> None:
+@pytest.mark.parametrize(
+    ("binary", "other_kind"),
+    [("whisper_server", "qwen3_asr"), ("cohere_transcribe_server", "whisper")],
+)
+def test_server_serves_only_its_model_kind(binary: str, other_kind: str) -> None:
     completed = subprocess.run(
         [
-            str(Path(RUNTIME_BIN) / "whisper_server"),
+            str(Path(RUNTIME_BIN) / binary),
             "--supervised",
             "--model-kind",
-            "qwen3_asr",
+            other_kind,
             "--model-directory",
             "x",
         ],  # fmt: skip
@@ -218,3 +233,82 @@ def test_whisper_server_serves_only_whisper() -> None:
     )
     assert completed.returncode == 2
     assert completed.stdout == ""
+
+
+@pytest.fixture(scope="module")
+def cohere_server() -> Iterator[ModelServer]:
+    running = ModelServer("cohere_transcribe_server", "cohere_transcribe", COHERE_REPO)
+    yield running
+    running.stop()
+
+
+def test_cohere_final_request_streams_text_and_generation_metadata(
+    cohere_server: ModelServer,
+) -> None:
+    assert cohere_server.ready["model_name"].startswith("voxt-cohere_transcribe-")
+    status, body = cohere_server.post_form(
+        {
+            "stream": "true",
+            "language": "zh",
+            "use_punctuation": "true",
+            "max_new_tokens": "1024",
+            "temperature": "0.0",
+            "chunk_duration": "1200",
+            "min_chunk_duration": "1",
+            "include_generation_metadata": "true",
+        },
+        clip("0152_zh_short"),
+    )
+    assert status == 200
+    assert sse_events(body) == [
+        {
+            "type": "transcript.text.done",
+            "text": "互联网结合了大众传播和人际传播的要素。",
+            "generation_metadata": {
+                "generated_token_count": 20,
+                "language": "zh",
+                "finish_reason": "stop",
+            },
+        },
+        "[DONE]",
+    ]
+
+
+def test_cohere_cuts_long_audio_at_speech(cohere_server: ModelServer) -> None:
+    vad_directory = str(Path(DATA_ROOT) / "models" / VAD_REPO.replace("/", "_"))
+    status, body = cohere_server.post_form(
+        {"language": "en", "vad_model_directory": vad_directory, **VAD_FIELDS},
+        clip("0344_en_long"),
+    )
+    assert status == 200
+    text = json.loads(body)["text"]
+    assert text.startswith("In every way they sought to undermine the authority")
+    assert len(text.split("\n")) > 1
+
+
+def test_cohere_voice_activity_needs_every_setting(cohere_server: ModelServer) -> None:
+    fields = {"vad_model_directory": "x", **VAD_FIELDS}
+    fields.pop("vad_threshold")
+    status, body = cohere_server.post_form(fields, clip("0006_en_short"))
+    assert status == 400
+    assert "vad_threshold" in json.loads(body)["detail"]
+
+
+def test_cohere_reports_the_language_it_decoded(cohere_server: ModelServer) -> None:
+    status, body = cohere_server.post_form(
+        {"language": "fr-FR", "stream": "true", "include_generation_metadata": "true"},
+        clip("0006_en_short"),
+    )
+    assert status == 200
+    assert sse_events(body)[0]["generation_metadata"]["language"] == "en"
+
+
+@pytest.mark.parametrize("temperature", ["nan", "-1"])
+def test_cohere_rejects_a_bad_temperature(
+    cohere_server: ModelServer, temperature: str
+) -> None:
+    status, body = cohere_server.post_form(
+        {"temperature": temperature}, clip("0006_en_short")
+    )
+    assert status == 400
+    assert "temperature" in json.loads(body)["detail"]

@@ -6,6 +6,18 @@ nonisolated enum OmniASRModelKind: String, Sendable, CaseIterable {
     case whisper
     case sileroVAD = "silero_vad"
     case sortformer = "sortformer"
+    case cohereTranscribe = "cohere_transcribe"
+}
+
+/// Long audio cut at speech by the server's Silero VAD, with Voxt's settings.
+nonisolated struct OmniSpeechSegments: Sendable, Equatable {
+    var vadModelDirectory: URL
+    var threshold: Float
+    var minSpeechMilliseconds: Int
+    var minSilenceMilliseconds: Int
+    var speechPadMilliseconds: Int
+    var mergeGapSeconds: Float
+    var maxChunkSeconds: Float
 }
 
 nonisolated struct OmniTranscriptionRequest: Sendable, Equatable {
@@ -21,6 +33,12 @@ nonisolated struct OmniTranscriptionRequest: Sendable, Equatable {
     var audioLayout: String? = nil
     /// Sampling temperature; nil or zero decodes greedily.
     var temperature: Float? = nil
+    /// Cohere Transcribe: punctuation, the energy-cut chunk lengths in seconds,
+    /// and speech cuts for long audio.
+    var usePunctuation: Bool? = nil
+    var chunkDuration: Float? = nil
+    var minChunkDuration: Float? = nil
+    var speechSegments: OmniSpeechSegments? = nil
 }
 
 nonisolated struct OmniGenerationMetadata: Sendable, Equatable {
@@ -131,6 +149,24 @@ nonisolated enum OmniMultipartBody {
         }
         if let temperature = request.temperature {
             fields.append(("temperature", String(temperature)))
+        }
+        if let usePunctuation = request.usePunctuation {
+            fields.append(("use_punctuation", usePunctuation ? "true" : "false"))
+        }
+        if let chunkDuration = request.chunkDuration {
+            fields.append(("chunk_duration", String(chunkDuration)))
+        }
+        if let minChunkDuration = request.minChunkDuration {
+            fields.append(("min_chunk_duration", String(minChunkDuration)))
+        }
+        if let segments = request.speechSegments {
+            fields.append(("vad_model_directory", segments.vadModelDirectory.path))
+            fields.append(("vad_threshold", String(segments.threshold)))
+            fields.append(("vad_min_speech_ms", String(segments.minSpeechMilliseconds)))
+            fields.append(("vad_min_silence_ms", String(segments.minSilenceMilliseconds)))
+            fields.append(("vad_speech_pad_ms", String(segments.speechPadMilliseconds)))
+            fields.append(("vad_merge_gap_seconds", String(segments.mergeGapSeconds)))
+            fields.append(("vad_max_chunk_seconds", String(segments.maxChunkSeconds)))
         }
         var body = Data()
         for (name, value) in fields {

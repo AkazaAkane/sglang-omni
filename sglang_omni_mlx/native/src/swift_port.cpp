@@ -8,7 +8,17 @@ namespace swift_port {
 
 namespace {
 
+namespace mx = mlx::core;
+
 constexpr int kSampleRate = 16000;
+
+std::vector<mx::array> SiluGraph(const std::vector<mx::array> &inputs) {
+  return {mx::multiply(inputs[0], mx::sigmoid(inputs[0]))};
+}
+
+std::vector<mx::array> ReluGraph(const std::vector<mx::array> &inputs) {
+  return {mx::maximum(inputs[0], mx::array(0.0f, inputs[0].dtype()))};
+}
 
 float HertzToMel(float frequency_hz, float linear_step_hz, float min_log_hz,
                  float min_log_mel, float log_step) {
@@ -125,6 +135,16 @@ std::vector<float> SlaneyMelFilterBank(int fft_size, int mel_bin_count) {
     }
   }
   return filters;
+}
+
+mx::array Silu(const mx::array &x) {
+  static const auto compiled = mx::compile(SiluGraph, true);
+  return compiled({x})[0];
+}
+
+mx::array Relu(const mx::array &x) {
+  static const auto compiled = mx::compile(ReluGraph, true);
+  return compiled({x})[0];
 }
 
 std::string TrimWhitespace(const std::string &text, bool newlines) {

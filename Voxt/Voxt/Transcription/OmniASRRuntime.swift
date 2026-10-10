@@ -502,6 +502,35 @@ extension OmniASRRuntime {
         )
     }
 
+    /// Cohere Transcribe Final as MLXAudio decoded it: energy-cut chunks, or
+    /// speech segments for long audio, share one token budget on the server.
+    nonisolated static func cohereFinalRequest(
+        samples: [Float],
+        sampleRate: Int,
+        language: String?,
+        usePunctuation: Bool?,
+        maxNewTokens: Int,
+        temperature: Float,
+        chunkDuration: Float,
+        minChunkDuration: Float,
+        speechSegments: OmniSpeechSegments?
+    ) -> OmniTranscriptionRequest {
+        OmniTranscriptionRequest(
+            samples: samples,
+            sampleRate: sampleRate,
+            language: language,
+            prompt: nil,
+            maxNewTokens: maxNewTokens,
+            stopAtEndOfText: false,
+            stopOnTokenLoop: false,
+            temperature: temperature,
+            usePunctuation: usePunctuation,
+            chunkDuration: chunkDuration,
+            minChunkDuration: minChunkDuration,
+            speechSegments: speechSegments
+        )
+    }
+
     func transcribeQwenFinal(
         samples: [Float],
         sampleRate: Int,

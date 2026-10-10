@@ -125,3 +125,19 @@ set_target_properties(whisper_server whisper_transcribe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS whisper_server whisper_transcribe RUNTIME DESTINATION bin)
+
+# Note (khazic): Cohere Transcribe: cohere_transcribe_server, with qwen3_asr_server's API
+# without realtime, and its parity tool; Silero VAD cuts long audio at speech.
+add_library(cohere_asr STATIC src/cohere_model.cpp src/cohere_transcriber.cpp
+  src/speech_segments.cpp)
+target_link_libraries(cohere_asr PUBLIC qwen3_asr swift_port silero_vad)
+# Note (khazic): CPU float math rounds each operation, as Swift does: no fused multiply-add.
+target_compile_options(cohere_asr PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(cohere_transcribe_server src/cohere_transcribe_server.cpp)
+target_link_libraries(cohere_transcribe_server PRIVATE cohere_asr asr_service)
+add_executable(cohere_transcribe tools/cohere_transcribe.cpp)
+target_link_libraries(cohere_transcribe PRIVATE cohere_asr)
+set_target_properties(cohere_transcribe_server cohere_transcribe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS cohere_transcribe_server cohere_transcribe RUNTIME DESTINATION bin)

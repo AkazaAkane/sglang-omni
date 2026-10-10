@@ -49,6 +49,42 @@ final class OmniTranscriptionRequestTests: XCTestCase {
         XCTAssertNil(fieldValue("include_generation_metadata", in: body))
     }
 
+    func testCohereFinalRequestsCarryVoxtsLongFormSettings() {
+        let request = OmniASRRuntime.cohereFinalRequest(
+            samples: [0, 0.1],
+            sampleRate: 16000,
+            language: "zh",
+            usePunctuation: false,
+            maxNewTokens: 1024,
+            temperature: 0,
+            chunkDuration: 1200,
+            minChunkDuration: 1,
+            speechSegments: OmniSpeechSegments(
+                vadModelDirectory: URL(fileURLWithPath: "/models/silero"),
+                threshold: 0.5,
+                minSpeechMilliseconds: 220,
+                minSilenceMilliseconds: 420,
+                speechPadMilliseconds: 180,
+                mergeGapSeconds: 1,
+                maxChunkSeconds: 24
+            )
+        )
+        let body = OmniMultipartBody.transcription(request, modelName: "m", boundary: "b")
+
+        XCTAssertEqual(fieldValue("language", in: body), "zh")
+        XCTAssertEqual(fieldValue("use_punctuation", in: body), "false")
+        XCTAssertEqual(fieldValue("max_new_tokens", in: body), "1024")
+        XCTAssertEqual(fieldValue("chunk_duration", in: body), "1200.0")
+        XCTAssertEqual(fieldValue("min_chunk_duration", in: body), "1.0")
+        XCTAssertEqual(fieldValue("vad_model_directory", in: body), "/models/silero")
+        XCTAssertEqual(fieldValue("vad_threshold", in: body), "0.5")
+        XCTAssertEqual(fieldValue("vad_min_speech_ms", in: body), "220")
+        XCTAssertEqual(fieldValue("vad_min_silence_ms", in: body), "420")
+        XCTAssertEqual(fieldValue("vad_speech_pad_ms", in: body), "180")
+        XCTAssertEqual(fieldValue("vad_merge_gap_seconds", in: body), "1.0")
+        XCTAssertEqual(fieldValue("vad_max_chunk_seconds", in: body), "24.0")
+    }
+
     func testRequestsWithoutALayoutLeaveTheServerDefault() {
         let request = OmniTranscriptionRequest(
             samples: [0],

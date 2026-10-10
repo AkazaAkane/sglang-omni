@@ -7,9 +7,12 @@
 
 Like check_golden.py, with the same per-chip golden outputs and tolerance, for a
 model served by its own binary. The golden file also names the parity tool
-(whisper_transcribe, ...), its request flags, and the language each clip
-language is sent with (a user with that main language); every corpus clip is
-transcribed, one tool run per language sent.
+(whisper_transcribe, ...), its request flags, the language each clip language
+is sent with (a user with that main language), and optionally the flags Voxt
+adds for clips past some duration. A flag given as {"model": repo} is that
+provisioned model's directory. Every corpus clip (or, with
+clips_over_seconds, every clip longer than that) is transcribed, one tool run
+per language sent and length.
 """
 
 from __future__ import annotations
@@ -17,8 +20,28 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from typing import TypedDict
 
 from check_golden import COMPARED_FIELDS, model_directory, run
+
+
+class ModelReference(TypedDict):
+    model: str
+
+
+RequestValue = str | int | float | ModelReference
+
+
+def request_flags(data_root: Path, request: dict[str, RequestValue]) -> list[str]:
+    flags = []
+    for field, value in request.items():
+        argument = (
+            model_directory(data_root, value["model"])
+            if isinstance(value, dict)
+            else value
+        )
+        flags += [f"--{field.replace('_', '-')}", str(argument)]
+    return flags
 
 
 def transcribe(
@@ -47,17 +70,20 @@ def transcribe_with_tool(
         str(runtime_bin / golden["tool"]),
         "--model-path",
         str(model_directory(data_root, golden["model"])),
-    ]
-    for flag, value in golden["request"].items():
-        command += [f"--{flag.replace('_', '-')}", str(value)]
-    clips_by_request_language: dict[str | None, list[Path]] = {}
+    ] + request_flags(data_root, golden["request"])
+    long_audio = golden.get("long_audio")
+    clip_groups: dict[tuple[str | None, bool], list[Path]] = {}
     for clip_id, clip in manifest.items():
-        clips_by_request_language.setdefault(
-            golden["language_by_clip_language"][clip["lang"]], []
+        is_long = (
+            long_audio is not None and clip["duration"] > long_audio["over_seconds"]
+        )
+        clip_groups.setdefault(
+            (golden["language_by_clip_language"][clip["lang"]], is_long), []
         ).append(data_root / "corpus" / "v1" / "clips" / f"{clip_id}.wav")
     results: dict[str, dict] = {}
-    for language, clips in clips_by_request_language.items():
-        results.update(transcribe(command, clips, language))
+    for (language, is_long), clips in clip_groups.items():
+        long_flags = request_flags(data_root, long_audio["request"]) if is_long else []
+        results.update(transcribe(command + long_flags, clips, language))
     return {clip_id: results[clip_id] for clip_id in manifest}
 
 
