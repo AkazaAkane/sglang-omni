@@ -29,6 +29,7 @@ nonisolated enum OmniASRBackend {
         "mlx-community/Qwen3-ASR-1.7B-8bit": .qwen3ASR,
         "mlx-community/whisper-large-v3-turbo": .whisper,
         "mlx-community/whisper-large-v3-mlx": .whisper,
+        "mlx-community/whisper-small-mlx": .whisper,
         "beshkenadze/cohere-transcribe-03-2026-mlx-fp16": .cohereTranscribe,
     ]
 

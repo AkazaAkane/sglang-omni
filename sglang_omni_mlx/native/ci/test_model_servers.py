@@ -28,6 +28,7 @@ pytestmark = pytest.mark.skipif(
 )
 WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
 WHISPER_LARGE_V3_REPO = "mlx-community/whisper-large-v3-mlx"
+WHISPER_SMALL_REPO = "mlx-community/whisper-small-mlx"
 COHERE_REPO = "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
 VAD_REPO = "mlx-community/silero-vad-v6"
 # Voxt's settings for cutting long audio at speech.
@@ -107,8 +108,9 @@ def test_whisper_plain_request_returns_json_text(whisper_server: ModelServer) ->
     )
 
 
-def test_whisper_large_v3_server_transcribes() -> None:
-    server = ModelServer("whisper_server", "whisper", WHISPER_LARGE_V3_REPO)
+@pytest.mark.parametrize("repo", [WHISPER_LARGE_V3_REPO, WHISPER_SMALL_REPO])
+def test_whisper_fp16_variant_server_transcribes(repo: str) -> None:
+    server = ModelServer("whisper_server", "whisper", repo)
     try:
         status, body = server.post_form(
             {"language": "en", "max_new_tokens": "128"}, clip("0006_en_short")
