@@ -98,9 +98,9 @@ handoff follow that reference. The server lifecycle extraction follows
 [PR #2870](https://github.com/sgl-project/sglang-omni/pull/2870).
 
 For an independent waveform comparison, use a separate Python reference
-environment with MLX 0.32.3, mlx-lm 0.31.3, Transformers 5.12.1, NumPy,
-SoundFile and matching Torch/TorchAudio versions (2.13.0 for the original
-Apple reference environment). Python is used only for this check:
+environment with MLX 0.32.3, mlx-lm 0.31.3, Transformers 5.12.1, NumPy
+2.3.5 and SoundFile 0.13.1. The validated Mac environment used Torch 2.13.0
+and TorchAudio 2.11.0 for CPU resampling. Python is used only for this check:
 
 ```bash
 python sglang_omni_mlx/native/ci/generate_music3_reference.py \
@@ -117,8 +117,8 @@ not measured results.
 Mac CI runs the Music3 HTTP checks and includes
 `native/ci/model_golden/minimax-music3.json` in its existing golden loop. Its
 cases cover English and Chinese, including a 250-frame acoustic overlap.
-The initial file has no recorded device outputs: it deliberately fails until
-native execution and reference parity have been reviewed. Import the runner's
+Apple M5 outputs are recorded after comparison with the frozen reference.
+For another chip, review and import the runner's
 `golden-outputs/minimax-music3.json` artifact using the existing workflow:
 
 ```bash
@@ -128,9 +128,36 @@ python sglang_omni_mlx/native/ci/check_model_golden.py \
 ```
 
 Exact PCM digests are checked per Apple chip; an unrecorded chip fails and
-uploads its WAVs and metadata for review. Compilation, real-model generation,
-reference parity and the first recorded golden are pending. No performance
-or music-quality claim is made by these checks.
+uploads its WAVs and metadata for review.
+
+Local validation on 2026-10-18 used an Apple M5 with 24 GiB of unified memory,
+macOS 26.6.2 and MLX 0.32.3. The native CMake build, 21 selected Music3 tests,
+seven golden-harness tests, six server model-kind checks and two existing
+Whisper supervisor lifecycle checks passed. The Music3 tests cover WAV/PCM
+responses, exact seeded repeats, invalid requests and a concurrent request
+returning 429.
+
+| Reference case | Frames | Samples per channel | Peak PCM error | RMS PCM error |
+| --- | ---: | ---: | ---: | ---: |
+| English short | 50 | 63,902 | 3.052e-5 | 1.207e-7 |
+| Chinese acoustic overlap | 250 | 319,879 | 3.052e-5 | 2.443e-7 |
+
+Both outputs are finite, non-silent 32 kHz stereo. The errors above compare
+normalized PCM16 samples against the frozen Python reference; the maximum
+is one PCM16 level. The original acceptance thresholds were unchanged.
+A fresh native process reproduced both recorded golden hashes exactly.
+These checks cover fixed-input waveform parity.
+
+To rerun the real-checkpoint HTTP and per-chip golden checks:
+
+```bash
+NATIVE_RUNTIME_BIN="$MUSIC3_RUNTIME/bin" CI_DATA_ROOT="$MUSIC3_DATA" \
+  python -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py -k music3
+python sglang_omni_mlx/native/ci/check_model_golden.py \
+  --runtime-bin "$MUSIC3_RUNTIME/bin" --data-root "$MUSIC3_DATA" \
+  --golden sglang_omni_mlx/native/ci/model_golden/minimax-music3.json \
+  --outputs "$MUSIC3_GOLDEN_OUTPUTS"
+```
 
 ## Generating Music
 

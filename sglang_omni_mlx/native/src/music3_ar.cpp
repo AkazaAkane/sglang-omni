@@ -131,6 +131,7 @@ mx::array Model::GenerateFrames(const Request &request,
                        Guided(logits));
     const mx::array sampled =
         Sample(mx::where(allowed, logits, mx::array(-1e9f)), frame_key);
+    mx::eval(sampled);
     if (sampled.item<int>() == end_token) {
       break;
     } else {

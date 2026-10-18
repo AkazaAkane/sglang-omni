@@ -91,7 +91,7 @@ std::vector<float> ResampleStereo(const mlx::core::array &waveform) {
   constexpr float base_frequency = output_period * 0.99f;
   constexpr int width = 9;
   const int input_samples = waveform.shape(1);
-  waveform.eval();
+  mlx::core::eval(waveform);
   const float *source = waveform.data<float>();
   const int output_samples = static_cast<int>(
       (static_cast<int64_t>(input_samples) * output_period + input_period - 1) /

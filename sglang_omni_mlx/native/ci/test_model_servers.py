@@ -995,6 +995,7 @@ def test_music3_rejects_invalid_requests_before_generation(
 
 
 def test_music3_wav_pcm_and_seeded_repeat(music3_server: ModelServer) -> None:
+    """A valid request returns audio instead of failing during token sampling."""
     request = {
         "input": "[Verse]\nWalking through the morning light",
         "instructions": "Gentle acoustic folk",
