@@ -1,0 +1,24 @@
+{
+ "model": "mlx-community/MiniMax-Music3-mxfp8",
+ "kind": "minimax_music3",
+ "reference": "sgl-project/sglang-omni#1990 at 195e4e9058e13af605f13f5c55a26efe651805a6; MLX 0.32.3",
+ "cases": [
+  {
+   "id": "en_short",
+   "input": "[Verse]\nWalking through the morning light\nEvery little thing feels right",
+   "instructions": "A gentle acoustic folk song with piano and soft vocals at 85 BPM",
+   "seed": 42,
+   "max_new_tokens": 50,
+   "dit_steps": 30
+  },
+  {
+   "id": "zh_cross_chunk",
+   "input": "[Verse]\n清晨的风吹过窗台\n阳光轻轻落在心海\n[Chorus]\n让歌声陪着我们向前走",
+   "instructions": "A warm Mandarin pop song with piano, acoustic guitar and gentle drums at 90 BPM",
+   "seed": 7,
+   "max_new_tokens": 250,
+   "dit_steps": 30
+  }
+ ],
+ "devices": {}
+}

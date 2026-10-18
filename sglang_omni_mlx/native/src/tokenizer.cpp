@@ -216,20 +216,39 @@ struct Tokenizer::Pcre2Regex {
 
 Tokenizer::Tokenizer(const std::filesystem::path &model_directory)
     : split_pattern_(std::make_unique<Pcre2Regex>()) {
-  const nlohmann::json vocabulary =
-      nlohmann::json::parse(ReadFile(model_directory / "vocab.json"));
-  for (const auto &[token, id] : vocabulary.items()) {
-    vocabulary_.emplace(token, id.get<int>());
-  }
-  std::istringstream merges(ReadFile(model_directory / "merges.txt"));
-  std::string line;
-  int rank = 0;
-  while (std::getline(merges, line)) {
-    if (line.rfind("#version", 0) == 0 || line.empty()) {
-      continue;
+  if (std::filesystem::exists(model_directory / "vocab.json")) {
+    const nlohmann::json vocabulary =
+        nlohmann::json::parse(ReadFile(model_directory / "vocab.json"));
+    for (const auto &[token, id] : vocabulary.items())
+      vocabulary_.emplace(token, id.get<int>());
+    std::istringstream merges(ReadFile(model_directory / "merges.txt"));
+    std::string line;
+    int rank = 0;
+    while (std::getline(merges, line)) {
+      if (line.rfind("#version", 0) == 0 || line.empty()) {
+        continue;
+      } else {
+        merge_ranks_.emplace(line, rank++);
+      }
+    }
+  } else {
+    const auto tokenizer =
+        nlohmann::json::parse(ReadFile(model_directory / "tokenizer.json"));
+    if (tokenizer.at("model").at("type") != "BPE" ||
+        tokenizer.at("normalizer").at("type") != "NFC") {
+      throw std::invalid_argument("expected an NFC byte-level BPE tokenizer");
     } else {
     }
-    merge_ranks_.emplace(line, rank++);
+    for (const auto &[token, id] : tokenizer.at("model").at("vocab").items())
+      vocabulary_.emplace(token, id.get<int>());
+    int rank = 0;
+    for (const auto &merge : tokenizer.at("model").at("merges")) {
+      const std::string pair = merge.is_array()
+                                   ? merge.at(0).get<std::string>() + " " +
+                                         merge.at(1).get<std::string>()
+                                   : merge.get<std::string>();
+      merge_ranks_.emplace(pair, rank++);
+    }
   }
   const nlohmann::json config = nlohmann::json::parse(
       ReadFile(model_directory / "tokenizer_config.json"));

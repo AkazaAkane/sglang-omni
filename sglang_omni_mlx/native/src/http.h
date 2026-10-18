@@ -2,6 +2,7 @@
 // HTTP helpers shared by the native server's services (civetweb).
 #pragma once
 
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -19,7 +20,8 @@ void WriteResponse(mg_connection *connection, int status,
                    const std::string &body);
 int WriteJson(mg_connection *connection, int status, const Json &body);
 int BadRequest(mg_connection *connection, const std::string &detail);
-std::string ReadBody(mg_connection *connection);
+std::string ReadBody(mg_connection *connection,
+                     size_t maximum_bytes = std::numeric_limits<size_t>::max());
 bool IsPost(mg_connection *connection);
 std::optional<std::string>
 Field(const std::map<std::string, qwen3_asr::FormField> &form,
