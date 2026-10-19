@@ -1025,6 +1025,34 @@ def test_music3_wav_pcm_and_seeded_repeat(music3_server: ModelServer) -> None:
         assert any(pcm)
 
 
+@pytest.mark.parametrize(
+    ("uppercase_tag", "lowercase_tag"),
+    [("CHŒUR", "chœur"), ("ΟΣ", "ος"), ("İNTRO", "i\u0307ntro")],
+)
+def test_music3_unicode_tag_case_preserves_seeded_audio(
+    music3_server: ModelServer, uppercase_tag: str, lowercase_tag: str
+) -> None:
+    """Non-ASCII uppercase section tags must normalize to the same audio."""
+    responses = []
+    for tag in [uppercase_tag, lowercase_tag]:
+        request = {
+            "input": f"[{tag}]\nWalking through the morning light",
+            "instructions": "Gentle acoustic folk",
+            "max_new_tokens": 10,
+            "dit_steps": 2,
+            "seed": 42,
+        }
+        status, body = music3_server.request(
+            "POST",
+            "/v1/audio/speech",
+            json.dumps(request).encode(),
+            {"Content-Type": "application/json"},
+        )
+        assert status == 200
+        responses.append(body)
+    assert responses[0] == responses[1]
+
+
 def test_music3_busy_request_returns_429(music3_server: ModelServer) -> None:
     request = json.dumps(
         {

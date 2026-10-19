@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "music3_model.h"
 
-#include <algorithm>
-#include <cctype>
+#include <CoreFoundation/CoreFoundation.h>
+
 #include <cmath>
 #include <limits>
 #include <regex>
@@ -84,10 +84,29 @@ std::string BuildPrompt(const std::string &caption, const std::string &lyrics) {
        end;
        match != end; ++match) {
     lowered += normalized.substr(offset, match->position() - offset);
-    std::string content = (*match)[1].str();
-    std::transform(
-        content.begin(), content.end(), content.begin(),
-        [](unsigned char character) { return std::tolower(character); });
+    const std::string tag_text = (*match)[1].str();
+    CFStringRef source = CFStringCreateWithBytes(
+        kCFAllocatorDefault, reinterpret_cast<const UInt8 *>(tag_text.data()),
+        static_cast<CFIndex>(tag_text.size()), kCFStringEncodingUTF8, false);
+    if (source == nullptr) {
+      throw std::invalid_argument("section tags must contain valid UTF-8");
+    } else {
+    }
+    CFMutableStringRef lowercase =
+        CFStringCreateMutableCopy(kCFAllocatorDefault, 0, source);
+    CFRelease(source);
+    // Note (Akazaakane): a null locale keeps tag casing independent of the
+    // user's locale.
+    CFStringLowercase(lowercase, nullptr);
+    const CFRange characters = CFRangeMake(0, CFStringGetLength(lowercase));
+    CFIndex byte_count = 0;
+    CFStringGetBytes(lowercase, characters, kCFStringEncodingUTF8, 0, false,
+                     nullptr, 0, &byte_count);
+    std::string content(static_cast<size_t>(byte_count), '\0');
+    CFStringGetBytes(lowercase, characters, kCFStringEncodingUTF8, 0, false,
+                     reinterpret_cast<UInt8 *>(content.data()), byte_count,
+                     nullptr);
+    CFRelease(lowercase);
     lowered += "[" + content + "]";
     offset = match->position() + match->length();
   }
