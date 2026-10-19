@@ -972,6 +972,9 @@ def test_music3_health_and_models(music3_server: ModelServer) -> None:
         {"stream": True},
         {"model": "other-model"},
         {"input": "hello " * 5100},
+        {"input": "x" * (64 * 1024 + 1)},
+        {"instructions": "x" * (64 * 1024 + 1)},
+        {"input": "[ab" * 13000},
     ],
 )
 def test_music3_rejects_invalid_requests_before_generation(

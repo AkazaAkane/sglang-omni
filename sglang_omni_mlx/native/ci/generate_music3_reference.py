@@ -27,6 +27,7 @@ def main() -> None:
     parser.add_argument("--model-path", type=Path, required=True)
     parser.add_argument("--runtime-bin", type=Path, required=True)
     parser.add_argument("--output-directory", type=Path, required=True)
+    parser.add_argument("--prompt-only", action="store_true")
     arguments = parser.parse_args()
     directory = arguments.output_directory.resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -36,6 +37,10 @@ def main() -> None:
         "mlx-community/MiniMax-Music3-mxfp8"
     ]
     for name, expected in checkpoint_pin["files"].items():
+        if arguments.prompt_only and not name.startswith("tokenizer/"):
+            continue
+        else:
+            pass
         if sha256(arguments.model_path / name) != expected:
             raise SystemExit(f"checkpoint hash mismatch: {name}")
         else:
@@ -57,11 +62,79 @@ def main() -> None:
     package = importlib.util.module_from_spec(specification)
     sys.modules["music3_reference"] = package
     specification.loader.exec_module(package)
+    prompt = importlib.import_module("music3_reference.prompt")
+    golden = json.loads((ci_directory / "model_golden/minimax-music3.json").read_text())
+    tokenizer = AutoTokenizer.from_pretrained(
+        arguments.model_path / "tokenizer", trust_remote_code=False
+    )
+    prompt.validate_tokenizer_ids(tokenizer)
+    prompt_cases: list[tuple[str, str, str]] = [
+        ("nested_bullet", "- * acoustic guitar", "[Verse]\nHello"),
+        ("wide_space", "Acoustic guitar\u3000", "[Verse]\nHello"),
+        ("nbsp_heading", "#\u00a0Title", "[Verse]\nHello"),
+        ("carriage_return", "# Folk\r- Piano", "[Verse]\r\nHello\r\n"),
+        ("unicode_lines", "# Folk\u2028- Piano\u2029Soft vocals", "Hello"),
+        (
+            "splitlines_controls",
+            "Folk\vPiano\fVocals\x1cDrums\x1dBass\x1eFlute\x85Warm",
+            "Hello",
+        ),
+        ("control_whitespace", "\x1f#\x1fFolk\x1f", "Hello"),
+        ("unicode_special", "<|\u3000style\u00a0gentle folk\u3000|>", "Hello"),
+        ("markdown", "\t# **Folk** *piano* *soft*\n---\n• Guitar", "Hello"),
+        ("leading_rule", "\n---\n", "Hello"),
+        ("unicode_tags", "Folk", "[Куплет]\nHello\n[ÉTÉ]\nWorld"),
+        ("greek_sigma", "Folk", "[ΟΣ]\nHello"),
+        ("expanding_lowercase", "Folk", "[İNTRO]\nHello"),
+        ("lyric_breaks", "Folk", "[Verse] discarded\nWords [CHŒUR] ^ next\n\n"),
+        ("multiline_tag", "Folk", "[VERSE\nCHORUS]\nHello"),
+        ("unclosed_tags", "<|style unfinished", "[ab[ab[ab"),
+    ]
+    prompt_cases.extend(
+        (case["id"], case["instructions"], case["input"]) for case in golden["cases"]
+    )
+    prompt_requests = directory / "prompt-requests.jsonl"
+    prompt_requests.write_text(
+        "".join(
+            json.dumps({"id": identifier, "instructions": caption, "input": lyrics})
+            + "\n"
+            for identifier, caption, lyrics in prompt_cases
+        )
+    )
+    completed = subprocess.run([
+        str(arguments.runtime_bin / "music3_synthesize"),
+        "--model-path", str(arguments.model_path.resolve()),
+        "--requests", str(prompt_requests), "--prompt-only",
+    ], capture_output=True, text=True, check=True)  # fmt: skip
+    native_prompts = [json.loads(line) for line in completed.stdout.splitlines()]
+    if len(native_prompts) != len(prompt_cases):
+        raise SystemExit("native prompt output count differs from the reference cases")
+    else:
+        pass
+    for (identifier, caption, lyrics), native in zip(prompt_cases, native_prompts):
+        reference_prompt = prompt.build_prompt(caption, lyrics)
+        if (
+            native["id"] != identifier
+            or native["prompt"] != reference_prompt
+            or native["token_ids"] != tokenizer(reference_prompt)["input_ids"]
+        ):
+            raise SystemExit(
+                f"{identifier}: reference/native prompt or token IDs differ"
+            )
+        else:
+            pass
+    (directory / "prompt-parity.json").write_text(
+        json.dumps({"matched_cases": [case[0] for case in prompt_cases]}, indent=2)
+        + "\n"
+    )
+    print(f"Prompt text and token IDs match on {len(prompt_cases)} reference cases.")
+    if arguments.prompt_only:
+        return
+    else:
+        pass
     loader = importlib.import_module("music3_reference.loader")
     autoregressive = importlib.import_module("music3_reference.ar")
     euler = importlib.import_module("music3_reference.euler")
-    prompt = importlib.import_module("music3_reference.prompt")
-    golden = json.loads((ci_directory / "model_golden/minimax-music3.json").read_text())
     request_file = directory / "requests.jsonl"
     request_file.write_text(
         "".join(json.dumps(case, ensure_ascii=False) + "\n" for case in golden["cases"])
@@ -73,10 +146,6 @@ def main() -> None:
         "--requests", str(request_file),
         "--output-directory", str(native_directory),
     ], check=True)  # fmt: skip
-    tokenizer = AutoTokenizer.from_pretrained(
-        arguments.model_path / "tokenizer", trust_remote_code=False
-    )
-    prompt.validate_tokenizer_ids(tokenizer)
     ar_model = loader.load_mlx_ar_model(str(arguments.model_path))
     acoustic_model = loader.load_mlx_acoustic_model(str(arguments.model_path))
     mx.set_cache_limit(1024**3)

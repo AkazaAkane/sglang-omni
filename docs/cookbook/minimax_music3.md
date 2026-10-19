@@ -76,7 +76,8 @@ This path includes Qwen3/RVQ decoding, condition fusion, Euler Flow/DiT,
 stereo DAV decoding, overlap crops, and Hann sinc conversion from 44.1 to
 32 kHz. AR guidance is fixed at 1.5 and top-k at 50. `max_new_tokens` defaults
 to 750 frames and accepts 1–9000, subject to the 10,240-token context and
-5000-token prompt limit. `seed` accepts integers in `[0, 2**63)` and defaults
+5000-token prompt limit. Before cleanup, `input` and `instructions` are each
+limited to 64 KiB of UTF-8. `seed` accepts integers in `[0, 2**63)` and defaults
 to zero. Optional `dit_steps` accepts 1–100 (default 30), and `dit_cfg_scale`
 accepts finite nonnegative values (default 1.7).
 
@@ -114,9 +115,17 @@ with each implementation, and compares waveform length, peak error (at most
 and both sets of WAVs for review; these tolerances are acceptance thresholds,
 not measured results.
 
+Add `--prompt-only` to the same command to compare native prompt text and token
+IDs with the frozen Python reference without loading model weights or generating
+audio. It covers nested Markdown bullets, Unicode whitespace and line separators,
+multilingual tag casing, malformed tags, and both waveform cases. The results
+are saved in `prompt-parity.json`.
+
 Mac CI runs the Music3 HTTP checks and includes
 `native/ci/model_golden/minimax-music3.json` in its existing golden loop. Its
 cases cover English and Chinese, including a 250-frame acoustic overlap.
+Music3 HTTP tests run in a separate pytest process so the module-scoped ASR
+servers release their weights first. The runner logs its unified memory size.
 Apple M5 outputs are recorded after comparison with the frozen reference.
 For another chip, review and import the runner's
 `golden-outputs/minimax-music3.json` artifact using the existing workflow:

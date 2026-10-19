@@ -1,70 +1,172 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "music3_model.h"
 
+#define PCRE2_CODE_UNIT_WIDTH 8
 #include <CoreFoundation/CoreFoundation.h>
+#include <pcre2.h>
 
 #include <cmath>
 #include <limits>
-#include <regex>
+#include <memory>
+#include <optional>
 #include <sstream>
 
 namespace music3 {
 
+namespace {
+
+constexpr size_t kMaximumPromptFieldBytes = 64 * 1024;
+
+struct PromptMatch {
+  size_t begin;
+  size_t end;
+  std::string capture;
+};
+
+class PromptPattern {
+public:
+  explicit PromptPattern(const char *pattern) {
+    int error = 0;
+    PCRE2_SIZE offset = 0;
+    code_.reset(pcre2_compile(reinterpret_cast<PCRE2_SPTR>(pattern),
+                              PCRE2_ZERO_TERMINATED, PCRE2_UTF | PCRE2_UCP,
+                              &error, &offset, nullptr));
+    if (!code_) {
+      throw std::runtime_error("cannot compile Music3 prompt pattern");
+    } else {
+    }
+  }
+
+  std::optional<PromptMatch> Search(const std::string &text,
+                                    size_t offset = 0) const {
+    std::unique_ptr<pcre2_match_data, decltype(&pcre2_match_data_free)> match(
+        pcre2_match_data_create_from_pattern(code_.get(), nullptr),
+        pcre2_match_data_free);
+    const int result =
+        pcre2_match(code_.get(), reinterpret_cast<PCRE2_SPTR>(text.data()),
+                    text.size(), offset, 0, match.get(), nullptr);
+    if (result == PCRE2_ERROR_NOMATCH) {
+      return std::nullopt;
+    } else if (result < 0) {
+      throw std::invalid_argument("Music3 prompt pattern match failed");
+    } else {
+      const auto *positions = pcre2_get_ovector_pointer(match.get());
+      const int capture = result > 1 ? 2 : 0;
+      return PromptMatch{
+          positions[0], positions[1],
+          text.substr(positions[capture],
+                      positions[capture + 1] - positions[capture])};
+    }
+  }
+
+  std::string Replace(const std::string &text,
+                      const std::string &replacement) const {
+    std::string output(text.size() + 1, '\0');
+    PCRE2_SIZE bytes = output.size();
+    const auto substitute = [&]() {
+      return pcre2_substitute(
+          code_.get(), reinterpret_cast<PCRE2_SPTR>(text.data()), text.size(),
+          0, PCRE2_SUBSTITUTE_GLOBAL | PCRE2_SUBSTITUTE_OVERFLOW_LENGTH,
+          nullptr, nullptr, reinterpret_cast<PCRE2_SPTR>(replacement.data()),
+          replacement.size(), reinterpret_cast<PCRE2_UCHAR *>(output.data()),
+          &bytes);
+    };
+    int result = substitute();
+    if (result == PCRE2_ERROR_NOMEMORY) {
+      output.resize(bytes);
+      result = substitute();
+    } else {
+    }
+    if (result < 0) {
+      throw std::invalid_argument("Music3 prompt substitution failed");
+    } else {
+      output.resize(bytes);
+      return output;
+    }
+  }
+
+private:
+  std::unique_ptr<pcre2_code, decltype(&pcre2_code_free)> code_{
+      nullptr, pcre2_code_free};
+};
+
+} // namespace
+
 std::string BuildPrompt(const std::string &caption, const std::string &lyrics) {
-  static const std::regex special(R"(<\|([^|]*)\|>)");
+  if (caption.size() > kMaximumPromptFieldBytes ||
+      lyrics.size() > kMaximumPromptFieldBytes) {
+    throw std::invalid_argument(
+        "input and instructions must each be at most 64 KiB");
+  } else {
+  }
+  // Note (Akazaakane): Python whitespace includes four controls outside Unicode
+  // White_Space.
+  static const PromptPattern trim(R"(^[\s\x1c-\x1f]+|[\s\x1c-\x1f]+$)");
+  static const PromptPattern whitespace(R"([\s\x1c-\x1f]+)");
+  static const PromptPattern line_break(
+      R"(\r\n|[\n\r\v\f\x1c-\x1e\x{85}\x{2028}\x{2029}])");
+  static const PromptPattern special(R"(<\|([^|]*)\|>)");
+  static const PromptPattern heading(
+      R"(^[\s\x1c-\x1f]{0,3}#{1,6}[\s\x1c-\x1f]+)");
+  static const PromptPattern bullet(R"(^[\s\x1c-\x1f]*[*+-][\s\x1c-\x1f]+)");
+  static const PromptPattern asterisk_bullet(
+      R"(^[\s\x1c-\x1f]*\*[\s\x1c-\x1f]+)");
+  static const PromptPattern bold(R"(\*\*([^*]+)\*\*)");
+  static const PromptPattern italic(R"((?<!\*)\*([^*\n]+)\*(?!\*))");
+  static const PromptPattern trailing_whitespace(R"([\s\x1c-\x1f]+$)");
+  static const PromptPattern horizontal_rule(
+      R"((?m)^[\s\x1c-\x1f]*[-*_]{3,}[\s\x1c-\x1f]*$)");
+  static const PromptPattern markdown_spaces("• |    ");
+  static const PromptPattern blank_lines("\n{2,}");
+  static const PromptPattern leading_tags(R"(^[ \t]*((?:\[[^\]]+\][ \t]*)+))");
+  static const PromptPattern tag_space(R"(\] )");
+  static const PromptPattern space_tag(R"( \[)");
+  static const PromptPattern lyric_break(" \\^ ");
+  static const PromptPattern tag(R"(\[([^\]]+)\])");
   std::string cleaned;
   size_t offset = 0;
-  for (std::sregex_iterator match(caption.begin(), caption.end(), special), end;
-       match != end; ++match) {
-    cleaned += caption.substr(offset, match->position() - offset);
-    std::istringstream words((*match)[1].str());
-    std::string first, rest;
-    words >> first;
-    std::getline(words >> std::ws, rest);
-    const size_t last_word = rest.find_last_not_of(" \t\r\n\v\f");
-    rest = last_word == std::string::npos ? "" : rest.substr(0, last_word + 1);
-    cleaned += first + (rest.empty() ? "" : " is " + rest);
-    offset = match->position() + match->length();
+  while (const auto match = special.Search(caption, offset)) {
+    cleaned += caption.substr(offset, match->begin - offset);
+    const std::string inner = trim.Replace(match->capture, "");
+    if (const auto separator = whitespace.Search(inner)) {
+      cleaned += inner.substr(0, separator->begin) + " is " +
+                 inner.substr(separator->end);
+    } else {
+      cleaned += inner;
+    }
+    offset = match->end;
   }
   cleaned += caption.substr(offset);
-  std::istringstream lines(cleaned);
+  std::istringstream lines(line_break.Replace(cleaned, "\n"));
   cleaned.clear();
   std::string line;
   bool first_line = true;
   while (std::getline(lines, line)) {
-    line = std::regex_replace(line, std::regex(R"(^\s{0,3}#{1,6}\s+)"), "");
-    line = std::regex_replace(line, std::regex(R"(^\s*[*+-]\s+)"), "");
+    line = heading.Replace(line, "");
+    line = bullet.Replace(line, "");
+    line = asterisk_bullet.Replace(line, "");
     while (line.find("**") != std::string::npos) {
-      const std::string replaced =
-          std::regex_replace(line, std::regex(R"(\*\*([^*]+)\*\*)"), "$1");
+      const std::string replaced = bold.Replace(line, "$1");
       if (replaced == line) {
         break;
       } else {
         line = replaced;
       }
     }
-    line = std::regex_replace(
-        line, std::regex(R"((^|[^*])\*([^*\n]+)\*(?!\*))"), "$1$2");
-    const size_t last = line.find_last_not_of(" \t\r\v\f");
-    line = last == std::string::npos ? "" : line.substr(0, last + 1);
-    if (std::regex_match(line, std::regex(R"(\s*[-*_]{3,}\s*)"))) {
-      line.clear();
-    } else {
-    }
+    line = italic.Replace(line, "$1");
+    line = trailing_whitespace.Replace(line, "");
     cleaned += (first_line ? "" : "\n") + line;
     first_line = false;
   }
-  cleaned = std::regex_replace(cleaned, std::regex("• |    "), "");
-  cleaned = std::regex_replace(cleaned, std::regex("\n{2,}"), "\n");
+  cleaned = horizontal_rule.Replace(cleaned, "");
+  cleaned = markdown_spaces.Replace(cleaned, "");
+  cleaned = blank_lines.Replace(cleaned, "\n");
   std::istringstream lyric_lines(lyrics);
   std::string normalized;
   first_line = true;
   while (std::getline(lyric_lines, line)) {
-    std::smatch tags;
-    if (std::regex_search(line, tags,
-                          std::regex(R"(^[ \t]*((?:\[[^\]]+\][ \t]*)+))"))) {
-      line = tags[1].str();
-      line.erase(line.find_last_not_of(" \t") + 1);
+    if (const auto tags = leading_tags.Search(line)) {
+      line = trim.Replace(tags->capture, "");
     } else {
     }
     normalized += (first_line ? "" : "\n") + line;
@@ -74,17 +176,14 @@ std::string BuildPrompt(const std::string &caption, const std::string &lyrics) {
     normalized += '\n';
   } else {
   }
-  normalized = std::regex_replace(normalized, std::regex(R"(\] )"), "]\n");
-  normalized = std::regex_replace(normalized, std::regex(R"( \[)"), "\n[");
-  normalized = std::regex_replace(normalized, std::regex(R"( \^ )"), "\n");
-  static const std::regex tag(R"(\[([^\]]+)\])");
+  normalized = tag_space.Replace(normalized, "]\n");
+  normalized = space_tag.Replace(normalized, "\n[");
+  normalized = lyric_break.Replace(normalized, "\n");
   std::string lowered;
   offset = 0;
-  for (std::sregex_iterator match(normalized.begin(), normalized.end(), tag),
-       end;
-       match != end; ++match) {
-    lowered += normalized.substr(offset, match->position() - offset);
-    const std::string tag_text = (*match)[1].str();
+  while (const auto match = tag.Search(normalized, offset)) {
+    lowered += normalized.substr(offset, match->begin - offset);
+    const std::string &tag_text = match->capture;
     CFStringRef source = CFStringCreateWithBytes(
         kCFAllocatorDefault, reinterpret_cast<const UInt8 *>(tag_text.data()),
         static_cast<CFIndex>(tag_text.size()), kCFStringEncodingUTF8, false);
@@ -108,7 +207,7 @@ std::string BuildPrompt(const std::string &caption, const std::string &lyrics) {
                      nullptr);
     CFRelease(lowercase);
     lowered += "[" + content + "]";
-    offset = match->position() + match->length();
+    offset = match->end;
   }
   lowered += normalized.substr(offset);
   return "<|im_start|><|caption_start|>" + cleaned +
