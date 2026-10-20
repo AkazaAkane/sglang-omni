@@ -8,9 +8,9 @@
 #include <string>
 #include <vector>
 
-#include "layers.h"
-#include "qwen3_decoder.h"
-#include "tokenizer.h"
+#include "common/layers.h"
+#include "common/tokenizer.h"
+#include "qwen3_asr/qwen3_decoder.h"
 
 namespace music3 {
 

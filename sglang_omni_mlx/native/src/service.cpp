@@ -15,7 +15,7 @@
 #include <stdexcept>
 #include <thread>
 
-#include "http.h"
+#include "common/http.h"
 
 namespace omni_server {
 

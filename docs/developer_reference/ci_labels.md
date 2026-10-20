@@ -51,8 +51,13 @@ Only PR Test and the selected stages actually run; a stage that is not selected 
 
 | Job | What it runs |
 | --- | --- |
-| `unit-test` | `pytest tests/ -m "not benchmark and not accelerator"`, with CUDA hidden from the process |
+| `unit-test-a` | First runtime-balanced partition of `pytest tests/ -m "not benchmark and not accelerator"`, with CUDA hidden |
+| `unit-test-b` | Second runtime-balanced partition of the same CPU unit-test suite, with CUDA hidden |
 | `unit-test-accelerator` | `pytest tests/ -m "accelerator and not benchmark"`, the unit tests that need a GPU |
+
+The CPU partitions run as independent matrix jobs with fail-fast disabled. Files stay intact and are balanced using `.github/unit_test_durations.json`. Pytest discovers new tests automatically; files without a timing entry receive a one-second estimate, and new cases in an existing file stay in that file's partition. Local pytest remains unpartitioned unless the CI plugin is explicitly loaded.
+
+The initial weights are per-file p90 elapsed estimates from three successful H100 CPU jobs: [118185861718](https://github.com/sgl-project/sglang-omni/actions/runs/39288752772/job/118185861718), [118197139172](https://github.com/sgl-project/sglang-omni/actions/runs/39292142439/job/118197139172) and [118244967308](https://github.com/sgl-project/sglang-omni/actions/runs/39305977181/job/118244967308). Each file has three observations. The estimates aggregate timestamp intervals between completed pytest cases, excluding initial collection; they are not isolated setup/call/teardown measurements. These are PR runs with different revisions, not scheduled main-branch observations. The weights are a committed snapshot, not an automatically refreshed model.
 
 `run-unit-test-ci-only` selects PR Test without selecting model or hardware stages. Other stage labels remain additive, so keep them and `run-all-ci` absent for unit tests only. Shared setup still runs, including model-weight provisioning. PR Test also runs whenever any other stage label selects a stage, the hardware stages included.
 
@@ -219,7 +224,7 @@ Maintainers with CI permissions can use `/tag-and-rerun-ci` with one or more sho
 
 Stage targets are `unit-test`, `asr`, `tts`, `mps`, `omni`, `intel-cpu`, `intel-xpu` and `mac`. Model targets are `fun-asr`, `qwen3-asr`, `whisper-asr`, `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3`, `qwen3-omni`, `minicpmo`, `mps-higgs` and `mps-moss`. A short model target adds both its stage label and its model label.
 
-Use `/tag-and-rerun-full-ci` without arguments to add `run-all-ci` and select all stages. Bare `/tag-and-rerun-ci` and full GitHub label arguments, such as `run-tts-ci` or `run-all-ci`, are not accepted. Manual dispatch still accepts full labels through its `ci_labels` input.
+Use `/tag-and-rerun-full-ci` to add `run-all-ci` and select all stages. It also accepts short model targets, for example `/tag-and-rerun-full-ci qwen3-tts qwen3-asr qwen3-omni`. Add `mps-higgs` or `mps-moss` to select the MPS model independently. Model choices not specified by the command keep their existing labels or use the normal random selection. Bare `/tag-and-rerun-ci` and full GitHub label arguments, such as `run-tts-ci` or `run-all-ci`, are not accepted. Manual dispatch still accepts full labels through its `ci_labels` input.
 
 The command replaces conflicting model labels only in the requested stages and keeps other labels, including an existing `run-all-ci`. Existing stage labels still apply, so arguments do not narrow an already broader selection. It re-runs all jobs of the newest completed selected parent workflows on the current PR commit, unless GitHub requires workflow approval. If the newest run is active, the command leaves it running rather than retrying an older run. To apply changed labels after preflight has resolved the selection, run the command again after the active workflow finishes. Path filters and PR gates still apply.
 
