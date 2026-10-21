@@ -7,7 +7,7 @@
 #include <regex>
 #include <stdexcept>
 
-#include "music3_model.h"
+#include "music3/music3_model.h"
 
 int main(int argc, char **argv) {
   try {

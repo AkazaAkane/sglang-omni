@@ -87,7 +87,7 @@ target_include_directories(sortformer PUBLIC src)
 target_link_libraries(sortformer PUBLIC qwen3_asr)
 target_compile_options(sortformer PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
-add_library(omni_service STATIC src/service.cpp src/common/http.cpp)
+add_library(omni_service STATIC src/common/service.cpp src/common/http.cpp)
 target_link_libraries(omni_service PUBLIC common civetweb-c-library)
 target_compile_options(omni_service PRIVATE -Wall -Wextra)
 
@@ -219,11 +219,11 @@ set_target_properties(sensevoice_server sensevoice_transcribe PROPERTIES
   INSTALL_RPATH "@loader_path")
 install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)
 
-add_library(music3 STATIC src/music3_model.cpp src/music3_ar.cpp
-  src/music3_acoustic.cpp src/music3_audio.cpp src/music3_request.cpp)
+add_library(music3 STATIC src/music3/music3_model.cpp src/music3/music3_ar.cpp
+  src/music3/music3_acoustic.cpp src/music3/music3_audio.cpp src/music3/music3_request.cpp)
 target_link_libraries(music3 PUBLIC qwen3_asr)
 target_compile_options(music3 PRIVATE -Wall -Wextra -ffp-contract=off)
-add_executable(music3_server src/music3_server.cpp src/music3_service.cpp)
+add_executable(music3_server src/music3/music3_server.cpp src/music3/music3_service.cpp)
 target_link_libraries(music3_server PRIVATE music3 omni_service)
 add_executable(music3_synthesize tools/music3_synthesize.cpp)
 target_link_libraries(music3_synthesize PRIVATE music3)

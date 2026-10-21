@@ -12,9 +12,9 @@
 #include "civetweb.h"
 #include "common/audio.h"
 #include "common/http.h"
+#include "common/service.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_asr/worker.h"
-#include "service.h"
 
 namespace asr_service {
 

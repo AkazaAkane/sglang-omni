@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "music3_model.h"
+#include "music3/music3_model.h"
 
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <CoreFoundation/CoreFoundation.h>
@@ -116,7 +116,8 @@ std::string BuildPrompt(const std::string &caption, const std::string &lyrics) {
   static const PromptPattern trailing_whitespace(R"([\s\x1c-\x1f]+$)");
   static const PromptPattern horizontal_rule(
       R"((?m)^[\s\x1c-\x1f]*[-*_]{3,}[\s\x1c-\x1f]*$)");
-  static const PromptPattern markdown_spaces("• |    ");
+  static const PromptPattern inline_bullet("• ");
+  static const PromptPattern indentation("    ");
   static const PromptPattern blank_lines("\n{2,}");
   static const PromptPattern leading_tags(R"(^[ \t]*((?:\[[^\]]+\][ \t]*)+))");
   static const PromptPattern tag_space(R"(\] )");
@@ -159,7 +160,8 @@ std::string BuildPrompt(const std::string &caption, const std::string &lyrics) {
     first_line = false;
   }
   cleaned = horizontal_rule.Replace(cleaned, "");
-  cleaned = markdown_spaces.Replace(cleaned, "");
+  cleaned = inline_bullet.Replace(cleaned, "");
+  cleaned = indentation.Replace(cleaned, "");
   cleaned = blank_lines.Replace(cleaned, "\n");
   std::istringstream lyric_lines(lyrics);
   std::string normalized;

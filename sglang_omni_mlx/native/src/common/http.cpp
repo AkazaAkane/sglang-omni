@@ -18,10 +18,7 @@ void WriteResponse(mg_connection *connection, int status,
 
 int WriteJson(mg_connection *connection, int status, const Json &body) {
   WriteResponse(connection, status,
-                status == 200   ? "OK"
-                : status == 400 ? "Bad Request"
-                : status == 405 ? "Method Not Allowed"
-                                : "Internal Server Error",
+                mg_get_response_code_text(connection, status),
                 "application/json", body.dump());
   return status;
 }
@@ -35,10 +32,10 @@ std::string ReadBody(mg_connection *connection, size_t maximum_bytes) {
   char buffer[65536];
   int read = 0;
   while ((read = mg_read(connection, buffer, sizeof(buffer))) > 0) {
-    if (static_cast<size_t>(read) > maximum_bytes - body.size()) {
+    body.append(buffer, static_cast<size_t>(read));
+    if (maximum_bytes != 0 && body.size() > maximum_bytes) {
       throw std::length_error("request body exceeds size limit");
     } else {
-      body.append(buffer, static_cast<size_t>(read));
     }
   }
   return body;

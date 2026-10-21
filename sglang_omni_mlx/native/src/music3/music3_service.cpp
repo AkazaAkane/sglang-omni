@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "music3_service.h"
+#include "music3/music3_service.h"
 
 #include <iostream>
 #include <typeinfo>
@@ -58,6 +58,10 @@ void SpeechService::Run(const std::filesystem::path &directory,
     std::exception_ptr error;
     try {
       CheckCancelled(job->cancelled);
+      job->request =
+          ParseRequest(nlohmann::json::parse(job->body), model_->tokenizer(),
+                       model_name_, model_->context_tokens());
+      CheckCancelled(job->cancelled);
       result = model_->Synthesize(job->request, job->cancelled);
       CheckCancelled(job->cancelled);
     } catch (...) {
@@ -103,22 +107,12 @@ int SpeechService::Handle(mg_connection *connection) {
                                   {{"detail", "Method Not Allowed"}});
   } else {
   }
-  Request request;
+  auto job = std::make_shared<Job>();
   try {
-    const nlohmann::json body =
-        nlohmann::json::parse(omni_server::ReadBody(connection, 1024 * 1024));
-    request = ParseRequest(body, model_->tokenizer(), model_name_,
-                           model_->context_tokens());
-  } catch (const nlohmann::json::exception &) {
-    return omni_server::BadRequest(
-        connection, "invalid request JSON, missing field or field type");
+    job->body = omni_server::ReadBody(connection, 1024 * 1024);
   } catch (const std::length_error &) {
     return omni_server::BadRequest(connection, "request body exceeds 1 MiB");
-  } catch (const std::invalid_argument &error) {
-    return omni_server::BadRequest(connection, error.what());
   }
-  auto job = std::make_shared<Job>();
-  job->request = request;
   auto future = job->completion.get_future();
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -135,9 +129,14 @@ int SpeechService::Handle(mg_connection *connection) {
   try {
     const Result result = future.get();
     omni_server::WriteResponse(connection, 200, "OK",
-                               request.pcm ? "audio/pcm" : "audio/wav",
-                               EncodeAudio(result.samples, request.pcm));
+                               job->request.pcm ? "audio/pcm" : "audio/wav",
+                               EncodeAudio(result.samples, job->request.pcm));
     return 200;
+  } catch (const nlohmann::json::exception &) {
+    return omni_server::BadRequest(
+        connection, "invalid request JSON, missing field or field type");
+  } catch (const std::invalid_argument &error) {
+    return omni_server::BadRequest(connection, error.what());
   } catch (const Cancelled &) {
     return omni_server::WriteJson(connection, 503,
                                   {{"detail", "Music3 generation cancelled"}});

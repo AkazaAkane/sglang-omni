@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "service.h"
+#include "common/service.h"
 
 #include <signal.h>
 #include <unistd.h>

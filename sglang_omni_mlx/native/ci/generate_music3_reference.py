@@ -70,6 +70,7 @@ def main() -> None:
     prompt.validate_tokenizer_ids(tokenizer)
     prompt_cases: list[tuple[str, str, str]] = [
         ("nested_bullet", "- * acoustic guitar", "[Verse]\nHello"),
+        ("inline_bullet_spaces", "Style:  •   rock", "[Verse]\nHello"),
         ("wide_space", "Acoustic guitar\u3000", "[Verse]\nHello"),
         ("nbsp_heading", "#\u00a0Title", "[Verse]\nHello"),
         ("carriage_return", "# Folk\r- Piano", "[Verse]\r\nHello\r\n"),

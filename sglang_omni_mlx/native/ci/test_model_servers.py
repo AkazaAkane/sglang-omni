@@ -942,6 +942,63 @@ def music3_server() -> Iterator[ModelServer]:
     running.stop()
 
 
+@pytest.mark.parametrize(
+    ("section", "replacement", "error"),
+    [
+        ("pre_tokenizer", {"type": "ByteLevel"}, "requires NFC and byte-level BPE"),
+        ("model", {"type": "WordPiece"}, "requires NFC and byte-level BPE"),
+        (
+            "added_tokens",
+            [
+                {
+                    "id": 151643,
+                    "content": "<|endoftext|>",
+                    "single_word": False,
+                    "lstrip": False,
+                    "rstrip": False,
+                    "normalized": True,
+                    "special": True,
+                }
+            ],
+            "unsupported added token matching rules",
+        ),
+    ],
+)
+def test_music3_rejects_unsupported_tokenizer_rules(
+    tmp_path: Path,
+    section: str,
+    replacement: dict[str, str] | list[dict[str, str | int | bool]],
+    error: str,
+) -> None:
+    source = (
+        Path(DATA_ROOT)
+        / "models/mlx-community_MiniMax-Music3-mxfp8/tokenizer/tokenizer.json"
+    )
+    tokenizer = json.loads(source.read_text())
+    tokenizer[section] = replacement
+    (tmp_path / "tokenizer").mkdir()
+    (tmp_path / "tokenizer/tokenizer.json").write_text(json.dumps(tokenizer))
+    requests = tmp_path / "requests.jsonl"
+    requests.write_text(
+        json.dumps({"id": "prompt", "input": "Hello", "instructions": "Folk"}) + "\n"
+    )
+    completed = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "music3_synthesize"),
+            "--model-path",
+            str(tmp_path),
+            "--requests",
+            str(requests),
+            "--prompt-only",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert error in completed.stderr
+
+
 def test_music3_health_and_models(music3_server: ModelServer) -> None:
     assert music3_server.ready["event"] == "ready"
     status, body = music3_server.request("GET", "/health")
@@ -1080,9 +1137,10 @@ def test_music3_busy_request_returns_429(music3_server: ModelServer) -> None:
                 time.sleep(0.02)
         else:
             pytest.fail("Music3 did not enter the running state")
-        status, body = music3_server.request(
-            "POST", "/v1/audio/speech", request, headers
-        )
-        assert status == 429
-        assert json.loads(body)["detail"] == "Music3 is busy"
+        for busy_request in (request, b"{invalid JSON"):
+            status, body = music3_server.request(
+                "POST", "/v1/audio/speech", busy_request, headers
+            )
+            assert status == 429
+            assert json.loads(body)["detail"] == "Music3 is busy"
         assert pending.result(timeout=120)[0] == 200

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "music3_service.h"
+#include "music3/music3_service.h"
 
 int main(int argc, char **argv) {
   mlx::core::set_cache_limit(1024ULL * 1024 * 1024);

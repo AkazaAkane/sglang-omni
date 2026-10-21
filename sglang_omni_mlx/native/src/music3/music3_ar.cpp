@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2024 Prince Canuma and contributors.
-#include "music3_model.h"
+#include "music3/music3_model.h"
 
 #include <algorithm>
 #include <cmath>

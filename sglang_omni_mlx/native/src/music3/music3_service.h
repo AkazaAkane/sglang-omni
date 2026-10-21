@@ -7,8 +7,8 @@
 #include <mutex>
 #include <thread>
 
-#include "music3_model.h"
-#include "service.h"
+#include "common/service.h"
+#include "music3/music3_model.h"
 
 struct mg_connection;
 
@@ -24,6 +24,7 @@ public:
 
 private:
   struct Job {
+    std::string body;
     Request request;
     std::atomic<bool> cancelled{false};
     std::promise<Result> completion;

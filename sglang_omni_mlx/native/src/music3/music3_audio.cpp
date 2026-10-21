@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "music3_model.h"
+#include "music3/music3_model.h"
 
 #include <algorithm>
 #include <array>
