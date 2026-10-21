@@ -948,6 +948,16 @@ def music3_server() -> Iterator[ModelServer]:
         ("pre_tokenizer", {"type": "ByteLevel"}, "requires NFC and byte-level BPE"),
         ("model", {"type": "WordPiece"}, "requires NFC and byte-level BPE"),
         (
+            "model",
+            {"type": "BPE", "continuing_subword_prefix": "##"},
+            "requires NFC and byte-level BPE",
+        ),
+        (
+            "model",
+            {"type": "BPE", "end_of_word_suffix": "</w>"},
+            "requires NFC and byte-level BPE",
+        ),
+        (
             "added_tokens",
             [
                 {

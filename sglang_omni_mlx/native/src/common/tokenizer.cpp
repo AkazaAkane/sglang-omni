@@ -274,11 +274,16 @@ Tokenizer::Tokenizer(const nlohmann::json &tokenizer, Serialized)
 void Tokenizer::LoadJson(const nlohmann::json &tokenizer) {
   const auto &model = tokenizer.at("model");
   const auto &pre = tokenizer.at("pre_tokenizer");
+  const auto continuing_subword_prefix =
+      model.value("continuing_subword_prefix", nlohmann::json());
+  const auto end_of_word_suffix =
+      model.value("end_of_word_suffix", nlohmann::json());
   if (model.at("type") != "BPE" ||
       !model.value("dropout", nlohmann::json()).is_null() ||
       !model.value("unk_token", nlohmann::json()).is_null() ||
-      !model.value("continuing_subword_prefix", nlohmann::json()).is_null() ||
-      !model.value("end_of_word_suffix", nlohmann::json()).is_null() ||
+      (!continuing_subword_prefix.is_null() &&
+       continuing_subword_prefix != "") ||
+      (!end_of_word_suffix.is_null() && end_of_word_suffix != "") ||
       model.value("byte_fallback", false) ||
       model.value("ignore_merges", false) ||
       tokenizer.at("normalizer").at("type") != "NFC" ||
