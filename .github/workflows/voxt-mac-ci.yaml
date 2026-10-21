@@ -156,6 +156,38 @@ jobs:
         run: |
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$VOXT_CI_ROOT/runtime-build"
 
+      - name: Provision the Music3 checkpoint
+        if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
+        run: |
+          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
+            --model mlx-community/MiniMax-Music3-mxfp8
+
+      - name: Music3 golden outputs
+        if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
+        run: |
+          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/check_model_golden.py \
+            --runtime-bin "$RUNNER_TEMP/runtime/bin" --data-root "$VOXT_CI_ROOT/data" \
+            --golden sglang_omni_mlx/native/ci/model_golden/minimax-music3.json \
+            --outputs "$RUNNER_TEMP/golden-outputs"
+
+      - name: Upload this chip's Music3 outputs
+        if: ${{ always() && needs.preflight.outputs.run_music3 == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: music3-golden-outputs
+          path: |
+            ${{ runner.temp }}/golden-outputs/minimax-music3.json
+            ${{ runner.temp }}/golden-outputs/music3-audio
+          if-no-files-found: ignore
+
+      - name: Music3 server API tests
+        if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
+        env:
+          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
+          CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
+        run: |
+          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py -k music3
+
       # Every golden file is checked, even after one fails, and this chip's
       # outputs are uploaded so they can be recorded as its golden outputs.
       - name: Golden outputs on the frozen corpus
@@ -184,20 +216,12 @@ jobs:
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
             --exclude-model mlx-community/MiniMax-Music3-mxfp8
 
-      - name: Provision the Music3 checkpoint
-        if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
-        run: |
-          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
-            --model mlx-community/MiniMax-Music3-mxfp8
-
       - name: Other models' golden outputs on the frozen corpus
         if: ${{ always() }}
-        env:
-          RUN_MUSIC3: ${{ needs.preflight.outputs.run_music3 }}
         run: |
           result=0
           for golden in sglang_omni_mlx/native/ci/model_golden/*.json; do
-            if [ "$RUN_MUSIC3" != true ] && [ "$(basename "$golden")" = minimax-music3.json ]; then
+            if [ "$(basename "$golden")" = minimax-music3.json ]; then
               continue
             else
               :
@@ -224,14 +248,6 @@ jobs:
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py -k 'not music3'
 
-      # Note (Akazaakane): release the module-scoped ASR servers before loading Music3.
-      - name: Music3 server API tests
-        if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
-        env:
-          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
-          CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
-        run: |
-          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py -k music3
 
   voxt-unit:
     name: Voxt Omni unit tests
