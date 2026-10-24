@@ -112,11 +112,12 @@ int SpeechService::Handle(mg_connection *connection) {
   } else {
   }
   auto job = std::make_shared<Job>();
-  try {
-    job->body = omni_server::ReadBody(connection, 1024 * 1024);
-  } catch (const std::length_error &) {
-    return omni_server::BadRequest(connection, "request body exceeds 1 MiB");
+  std::optional<std::string> body = omni_server::ReadBody(connection, 1 << 20);
+  if (!body.has_value()) {
+    return 413;
+  } else {
   }
+  job->body = std::move(*body);
   auto future = job->completion.get_future();
   {
     std::lock_guard<std::mutex> lock(mutex_);
