@@ -43,6 +43,8 @@ public:
 
 void CheckCancelled(const std::atomic<bool> &cancelled);
 std::string BuildPrompt(const std::string &caption, const std::string &lyrics);
+// An empty model_name accepts any model field, as the server does when no
+// --model-name was chosen and clients cannot know the generated one.
 Request ParseRequest(const nlohmann::json &body,
                      const qwen3_asr::Tokenizer &tokenizer,
                      const std::string &model_name, int context_tokens);

@@ -18,6 +18,7 @@ class SpeechService : public omni_server::Service {
 public:
   explicit SpeechService(const std::filesystem::path &directory);
   ~SpeechService() override;
+  void SetModelName(const std::string &model_name, bool chosen) override;
   void Register(mg_context *context, const std::string &model_name) override;
   std::map<std::string, int> RequestStates() const override;
   void CancelAll() override;
@@ -33,6 +34,7 @@ private:
   int Handle(mg_connection *connection);
 
   std::string model_name_;
+  bool has_chosen_model_name_ = false;
   std::unique_ptr<Model> model_;
   mutable std::mutex mutex_;
   std::condition_variable wake_;

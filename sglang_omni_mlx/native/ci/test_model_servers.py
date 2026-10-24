@@ -1037,7 +1037,6 @@ def test_music3_health_and_models(music3_server: ModelServer) -> None:
         {"dit_cfg_scale": True},
         {"response_format": "mp3"},
         {"stream": True},
-        {"model": "other-model"},
         {"input": "hello " * 5100},
         {"input": "x" * (64 * 1024 + 1)},
         {"instructions": "x" * (64 * 1024 + 1)},
@@ -1072,6 +1071,8 @@ def test_music3_wav_pcm_and_seeded_repeat(music3_server: ModelServer) -> None:
         "max_new_tokens": 10,
         "dit_steps": 2,
         "seed": 42,
+        # No --model-name was chosen, so an OpenAI client's model is accepted.
+        "model": "tts-1",
     }
     responses = []
     for format_name in ["wav", "pcm", "wav"]:

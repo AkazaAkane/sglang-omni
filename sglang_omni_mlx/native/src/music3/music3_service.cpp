@@ -2,7 +2,6 @@
 #include "music3/music3_service.h"
 
 #include <iostream>
-#include <typeinfo>
 
 #include "common/http.h"
 
@@ -60,7 +59,8 @@ void SpeechService::Run(const std::filesystem::path &directory,
       CheckCancelled(job->cancelled);
       job->request =
           ParseRequest(nlohmann::json::parse(job->body), model_->tokenizer(),
-                       model_name_, model_->context_tokens());
+                       has_chosen_model_name_ ? model_name_ : std::string(),
+                       model_->context_tokens());
       CheckCancelled(job->cancelled);
       result = model_->Synthesize(job->request, job->cancelled);
       CheckCancelled(job->cancelled);
@@ -74,8 +74,7 @@ void SpeechService::Run(const std::filesystem::path &directory,
       if (!error) {
         error = std::current_exception();
       } else {
-        std::cerr << "Music3 cleanup failed: " << typeid(cleanup_error).name()
-                  << "\n";
+        std::cerr << "Music3 cleanup failed: " << cleanup_error.what() << "\n";
       }
     }
     {
@@ -88,6 +87,11 @@ void SpeechService::Run(const std::filesystem::path &directory,
       job->completion.set_value(std::move(*result));
     }
   }
+}
+
+void SpeechService::SetModelName(const std::string &model_name, bool chosen) {
+  model_name_ = model_name;
+  has_chosen_model_name_ = chosen;
 }
 
 void SpeechService::Register(mg_context *context,
@@ -141,7 +145,7 @@ int SpeechService::Handle(mg_connection *connection) {
     return omni_server::WriteJson(connection, 503,
                                   {{"detail", "Music3 generation cancelled"}});
   } catch (const std::exception &error) {
-    std::cerr << "Music3 generation failed: " << typeid(error).name() << "\n";
+    std::cerr << "Music3 generation failed: " << error.what() << "\n";
     return omni_server::WriteJson(connection, 500,
                                   {{"detail", "Music3 generation failed"}});
   }

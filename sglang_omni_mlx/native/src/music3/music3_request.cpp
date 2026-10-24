@@ -230,7 +230,7 @@ Request ParseRequest(const nlohmann::json &body,
       caption.find_first_not_of(" \t\r\n") == std::string::npos) {
     throw std::invalid_argument(
         "input and instructions must be nonempty strings");
-  } else if (body.contains("model") &&
+  } else if (!model_name.empty() && body.contains("model") &&
              body.at("model").get<std::string>() != model_name) {
     throw std::invalid_argument("model does not match the served model");
   } else if (body.value("stream", false)) {

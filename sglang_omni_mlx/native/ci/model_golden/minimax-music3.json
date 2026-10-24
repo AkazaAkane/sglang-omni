@@ -37,6 +37,23 @@
      "generated_frames": 250
     }
    }
+  },
+  "Apple M4 Pro": {
+   "metrics": {},
+   "clips": {
+    "en_short": {
+     "sha256": "634c11fb480daa0fd2186b1755ad8d7f69754ace65d24d48b47c6cdc1c3352f1",
+     "sample_count": 63902,
+     "sample_rate": 32000,
+     "generated_frames": 50
+    },
+    "zh_cross_chunk": {
+     "sha256": "5c8b1edbdbeb0dd795de4f16369b1d62e43125d60596bd99f93e3634bd8252ee",
+     "sample_count": 319879,
+     "sample_rate": 32000,
+     "generated_frames": 250
+    }
+   }
   }
  }
 }
