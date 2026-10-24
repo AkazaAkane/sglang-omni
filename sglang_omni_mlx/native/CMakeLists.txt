@@ -219,6 +219,22 @@ set_target_properties(sensevoice_server sensevoice_transcribe PROPERTIES
   INSTALL_RPATH "@loader_path")
 install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)
 
+# Note (Minyi Tang): Voxtral 4B TTS: voxtral_tts_server, with the CUDA server's
+# /v1/audio/speech API, and its parity tool; the text decoder reuses Qwen3's.
+add_library(voxtral_tts STATIC src/voxtral_tts/voxtral_tts_tokenizer.cpp
+  src/voxtral_tts/voxtral_tts_codec.cpp src/voxtral_tts/voxtral_tts_model.cpp)
+target_link_libraries(voxtral_tts PUBLIC qwen3_asr)
+target_compile_options(voxtral_tts PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(voxtral_tts_server src/voxtral_tts/voxtral_tts_server.cpp)
+target_link_libraries(voxtral_tts_server PRIVATE voxtral_tts asr_service)
+target_compile_options(voxtral_tts_server PRIVATE -Wall -Wextra)
+add_executable(voxtral_tts_synthesize tools/voxtral_tts_synthesize.cpp)
+target_link_libraries(voxtral_tts_synthesize PRIVATE voxtral_tts)
+set_target_properties(voxtral_tts_server voxtral_tts_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS voxtral_tts_server voxtral_tts_synthesize RUNTIME DESTINATION bin)
+
 add_library(music3 STATIC src/music3/music3_model.cpp src/music3/music3_ar.cpp
   src/music3/music3_acoustic.cpp src/music3/music3_audio.cpp src/music3/music3_request.cpp)
 target_link_libraries(music3 PUBLIC qwen3_asr)
