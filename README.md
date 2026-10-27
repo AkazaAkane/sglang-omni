@@ -36,7 +36,7 @@
 - [2026/10] 🎙️ Introducing [Voxt](https://github.com/sgl-project/sglang-omni/tree/main/Voxt), an open-source voice input tool for Mac, now integrating SGLang-Omni for faster local speech recognition on Apple Silicon. Combine ASR with LLM-based text refinement and personal system prompts for accurate technical terminology and personalized voice input, with fully local or remote inference options. [[Download](https://github.com/sgl-project/sglang-omni/releases#release-voxt-v1.16.0)][[Demo]](https://x.com/GenAI_is_real/status/2109419016205017181)
 
 <details>
-<summary>Earlier news (before October 2026)</summary>
+<summary>Earlier news</summary>
 
 - [2026/09] 🐧 Day-0 support for [AuK](https://huggingface.co/tencent/AuK) and [AuK-Flash](https://huggingface.co/tencent/AuK-Flash): text + voice instructions → 24 kHz speech on `/v1/audio/speech`, audio + editing instructions → edited speech on `/generate`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/auk.html)\]
 - [2026/08] 🎵 Day-0 support for [MiniMax Music 3](https://huggingface.co/MiniMaxAI/MiniMax-Music3): lyrics + caption → 32 kHz stereo song on `/v1/audio/speech`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/minimax_music3.html)\]
