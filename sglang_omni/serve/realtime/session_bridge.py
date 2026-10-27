@@ -121,6 +121,16 @@ def capabilities_of(ports: SessionPorts) -> Capabilities:
         tail_policy="flush",
         input_modalities=ports.input_modalities,
         validate_images="image" in ports.input_modalities,
+        image_frames_per_unit=(
+            max(
+                (
+                    port.max_frames_per_unit
+                    for port in ports.input
+                    if isinstance(port, ImagePort)
+                ),
+                default=1,
+            ),
+        ),
         sampling_parameters=ports.sampling_parameters,
         supports_instruction_updates="instructions" in ports.hot_settings,
         supports_sampling_updates="sampling" in ports.hot_settings,

@@ -369,3 +369,45 @@ async def test_live_speech_interrupts_the_image_reply_and_next_image_is_answered
         assert cancelled["status_details"]["reason"] == "interrupted"
         assert "blue" in answer.text.lower() and answer.transcript and any(answer.audio)
         conversation.record("live-barge-in", answer)
+
+
+ALL_PICTURES_PATH = os.environ.get("SGLANG_OMNI_CASCADE_ALL_PICTURES_AUDIO")
+FIRST_PICTURE_PATH = os.environ.get("SGLANG_OMNI_CASCADE_FIRST_PICTURE_AUDIO")
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not ALL_PICTURES_PATH,
+    reason="A question asking for the cup colors in all pictures is required",
+)
+async def test_images_uploaded_together_reach_one_question() -> None:
+    async with conversation_on_server() as conversation:
+        await conversation.image(cup_image("red"))
+        await conversation.image(cup_image("blue"))
+        await conversation.question(read_question(ALL_PICTURES_PATH))
+        answer = await conversation.answer()
+        assert "red" in answer.text.lower() and "blue" in answer.text.lower()
+        conversation.record("together", answer)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not FIRST_PICTURE_PATH,
+    reason="A question asking for the cup color in the first picture is required",
+)
+@pytest.mark.parametrize("colors", [("red", "blue"), ("blue", "red")])
+async def test_earlier_picture_stays_visible_after_a_new_upload(
+    colors: tuple[str, str],
+) -> None:
+    async with conversation_on_server() as conversation:
+        spoken = ""
+        for color in colors:
+            await conversation.image(cup_image(color))
+            await conversation.question(read_question(FOLLOWUP_PATH))
+            spoken += (await conversation.answer()).text.lower()
+        assert "red" not in spoken and "blue" not in spoken
+        await conversation.question(read_question(FIRST_PICTURE_PATH))
+        answer = await conversation.answer()
+        assert colors[0] in answer.text.lower()
+        assert colors[1] not in answer.text.lower()
+        conversation.record(f"remembered-{colors[0]}", answer)

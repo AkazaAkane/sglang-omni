@@ -29,7 +29,7 @@ const ids = [
   "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName",
   "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness",
   "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset",
-  "imageTools", "imageFile", "imageUpload", "imagePreview", "imageName", "imageStatus", "imageRemove", "questionBtn", "questionMic", "questionStop",
+  "imageTools", "imageFile", "imageUpload", "imageGallery", "imageName", "imageStatus", "imageRemove", "questionBtn", "questionMic", "questionStop",
 ];
 const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
@@ -75,9 +75,8 @@ let lastSpokeAt = 0;
 let lastModelLoudAt = -Infinity;
 let lastMicLoudAt = -Infinity;
 let warnTimer = null;
-let selectedImage = null;
-let submittedImage = null;
-let submittedImageSession = null;
+// Picked images, oldest first, as { bytes, name, preview, session (the session that accepted or is receiving it), status }.
+let images = [];
 let preparingQuestion = false;
 let waitingForQuestion = false;
 let selectingImage = 0;
@@ -425,6 +424,11 @@ async function connect() {
   if (!window.DEMO_WS_URL) throw new Error("This page is not configured with a server address.");
   connecting = true;
   waitingForQuestion = false;
+  for (const image of images) {
+    image.session = null;
+    image.status = "Ready";
+  }
+  renderImages();
   await stopInput();
   sessionStart = null;
   muted = false;
@@ -574,35 +578,65 @@ function interrupt() {
   setButtons();
 }
 
-async function submitSelectedImage(activeSession) {
-  const image = selectedImage;
-  if (!image || (submittedImage === image && submittedImageSession === activeSession)) return;
-  ui.imageStatus.textContent = "Sending";
-  try {
-    await activeSession.sendImage(image.bytes);
-    submittedImage = image;
-    submittedImageSession = activeSession;
-    if (selectedImage === image) ui.imageStatus.textContent = "Received";
-  } catch (error) {
-    if (selectedImage === image) ui.imageStatus.textContent = "Rejected";
-    throw error;
+const IMAGE_STATUS_ORDER = ["Rejected", "Sending", "Ready", "Received"];
+
+function renderImages() {
+  ui.imageGallery.replaceChildren(...images.map((image, index) => {
+    const thumbnail = document.createElement("img");
+    thumbnail.className = "image-preview";
+    thumbnail.src = image.preview;
+    thumbnail.alt = `Image ${index + 1}: ${image.name}`;
+    thumbnail.title = `${image.name}: ${image.status}`;
+    thumbnail.dataset.status = image.status;
+    return thumbnail;
+  }));
+  ui.imageGallery.hidden = !images.length;
+  ui.imageRemove.hidden = !images.length;
+  ui.imageName.textContent = images.length === 1 ? images[0].name : images.length ? `${images.length} images` : "";
+  ui.imageStatus.textContent = IMAGE_STATUS_ORDER.find((status) => images.some((image) => image.status === status)) || "";
+}
+
+// Sends the given images in order; each stays marked as sent to activeSession only once the server accepts it.
+async function submitImages(activeSession, pending) {
+  if (!pending.length) return;
+  for (const image of pending) {
+    image.session = activeSession;
+    image.status = "Sending";
   }
+  renderImages();
+  const results = await Promise.allSettled(pending.map((image) => activeSession.sendImage(image.bytes)));
+  results.forEach((result, index) => {
+    const image = pending[index];
+    if (result.status === "fulfilled") image.status = "Received";
+    else {
+      image.session = null;
+      image.status = "Rejected";
+    }
+  });
+  renderImages();
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure) throw failure.reason;
 }
 
 async function startListening() {
   if (!isReady() || preparingQuestion || captureStream || startingMic) return;
   const activeSession = session;
+  const pending = images.filter((image) => image.session !== activeSession);
   preparingQuestion = true;
   setButtons();
   try {
-    await submitSelectedImage(activeSession);
+    await submitImages(activeSession, pending);
     if (session === activeSession && isReady()) await startMic();
   } catch (error) {
     if (session === activeSession && isReady() && !captureStream) {
       activeSession.send("input_audio_buffer.clear");
-      if (submittedImage && submittedImage === selectedImage) ui.imageStatus.textContent = "Ready";
-      submittedImage = null;
-      submittedImageSession = null;
+      for (const image of pending) {
+        if (image.session === activeSession) {
+          image.session = null;
+          image.status = "Ready";
+        }
+      }
+      renderImages();
     }
     throw error;
   } finally {
@@ -615,41 +649,46 @@ const start = () => connect().catch((error) => warn(error.message, true));
 ui.imageUpload.addEventListener("click", () => ui.imageFile.click());
 ui.imageFile.addEventListener("change", async () => {
   const generation = ++selectingImage;
-  const file = ui.imageFile.files[0];
-  if (!file) return;
-  try {
-    const capabilities = session && session.granted || settings.capabilities;
-    const limit = capabilities.input_image_format.max_bytes;
-    if (file.size > limit) throw new Error(`Image exceeds ${Math.round(limit / 1024)} KB`);
-    if (!["image/jpeg", "image/png"].includes(file.type)) throw new Error("Select a JPEG or PNG image");
-    const bitmap = await createImageBitmap(file);
-    const pixels = bitmap.width * bitmap.height;
-    bitmap.close();
-    if (pixels > 4 * 1024 * 1024) throw new Error("Image exceeds 4 megapixels");
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    if (generation !== selectingImage) return;
-    if (selectedImage) URL.revokeObjectURL(selectedImage.preview);
-    selectedImage = { bytes, name: file.name, preview: URL.createObjectURL(file) };
-    ui.imagePreview.src = selectedImage.preview;
-    ui.imagePreview.hidden = false;
-    ui.imageRemove.hidden = false;
-    ui.imageName.textContent = file.name;
-    ui.imageStatus.textContent = "Ready";
-    if (isReady() && !session.manualImageTurns) await submitSelectedImage(session);
-  } catch (error) {
-    if (generation === selectingImage) warn(error.message);
-  } finally {
-    ui.imageFile.value = "";
+  const files = Array.from(ui.imageFile.files);
+  ui.imageFile.value = "";
+  if (!files.length) return;
+  const capabilities = session && session.granted || settings.capabilities;
+  const { max_bytes: byteLimit, max_frames_per_unit: imageLimit } = capabilities.input_image_format;
+  const picked = [];
+  for (const file of files) {
+    try {
+      if (file.size > byteLimit) throw new Error(`${file.name} exceeds ${Math.round(byteLimit / 1024)} KB`);
+      if (!["image/jpeg", "image/png"].includes(file.type)) throw new Error(`${file.name} is not a JPEG or PNG image`);
+      const bitmap = await createImageBitmap(file);
+      const pixels = bitmap.width * bitmap.height;
+      bitmap.close();
+      if (pixels > 4 * 1024 * 1024) throw new Error(`${file.name} exceeds 4 megapixels`);
+      picked.push({ bytes: new Uint8Array(await file.arrayBuffer()), name: file.name, preview: URL.createObjectURL(file), session: null, status: "Ready" });
+    } catch (error) {
+      if (generation === selectingImage) warn(error.message);
+    }
+  }
+  if (generation !== selectingImage) {
+    for (const image of picked) URL.revokeObjectURL(image.preview);
+    return;
+  }
+  images.push(...picked);
+  // note (Yuhao Chen): The model keeps only its newest images, so the tray shows the same window.
+  if (images.length > imageLimit) {
+    for (const image of images.splice(0, images.length - imageLimit)) URL.revokeObjectURL(image.preview);
+    if (picked.length > imageLimit) warn(`Only the last ${imageLimit} images are kept`);
+  }
+  renderImages();
+  if (isReady() && !session.manualImageTurns) {
+    const activeSession = session;
+    await submitImages(activeSession, images.filter((image) => image.session !== activeSession)).catch((error) => warn(error.message));
   }
 });
 ui.imageRemove.addEventListener("click", () => {
   selectingImage += 1;
-  if (selectedImage) URL.revokeObjectURL(selectedImage.preview);
-  selectedImage = null;
-  ui.imagePreview.hidden = true;
-  ui.imageRemove.hidden = true;
-  ui.imageName.textContent = "";
-  ui.imageStatus.textContent = "";
+  for (const image of images) URL.revokeObjectURL(image.preview);
+  images = [];
+  renderImages();
 });
 ui.questionBtn.addEventListener("click", async () => {
   if (!isReady() || preparingQuestion || waitingForQuestion) return;
@@ -659,11 +698,9 @@ ui.questionBtn.addEventListener("click", async () => {
     await stopInput();
     activeSession.commitQuestion();
   } else {
-    const image = selectedImage;
     try {
       await startListening();
     } catch (error) {
-      if (selectedImage === image) ui.imageStatus.textContent = "Rejected";
       warn(error.message);
     }
   }

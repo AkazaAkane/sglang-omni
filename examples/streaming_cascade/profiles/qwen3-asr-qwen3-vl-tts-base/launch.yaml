@@ -5,7 +5,7 @@ max_sessions: 2
 
 services:
   - name: vlm
-    command: [python, -m, sglang.launch_server, --model-path, Qwen/Qwen3-VL-4B-Instruct, --revision, ebb281ec70b05090aa6165b016eac8ec08e71b17, --served-model-name, Qwen/Qwen3-VL-4B-Instruct, --host, "127.0.0.1", --port, "18010", --mem-fraction-static, "0.35", --context-length, "8192", --disable-cuda-graph]
+    command: [python, -m, sglang.launch_server, --model-path, Qwen/Qwen3-VL-4B-Instruct, --revision, ebb281ec70b05090aa6165b016eac8ec08e71b17, --served-model-name, Qwen/Qwen3-VL-4B-Instruct, --host, "127.0.0.1", --port, "18010", --mem-fraction-static, "0.35", --context-length, "40960", --disable-cuda-graph]
     env: {CUDA_VISIBLE_DEVICES: "0"}
     port: 18010
   - name: asr
@@ -38,7 +38,7 @@ session_nodes:
       - {source: "tts:session", feedback: true, overflow: drop_oldest, capacity: 1024}
       - {kind: control, source: input, event: interrupt}
       - {kind: control, source: tts, event: reply.progress}
-    system_prompt: You are a helpful visual voice assistant. Answer the spoken question using the attached image and conversation history. If no image is available, say so when the question needs one. Answer concisely in the user's language, without markdown or emoji.
+    system_prompt: You are a helpful visual voice assistant. Answer the spoken question in a full sentence using the attached images and conversation history; images from earlier questions stay visible after new ones arrive. If no image is available, say so when the question needs one. Answer concisely in the user's language, without markdown or emoji.
     max_history_images: 8
     max_history_image_bytes: 4194304
   llm:

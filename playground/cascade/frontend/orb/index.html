@@ -107,8 +107,13 @@
     .note { max-width: 440px; margin: 0; color: var(--faint); font-size: .76rem; line-height: 1.55; text-align: center; }
     .hint { color: var(--faint); font-size: .76rem; min-height: 1em; }
     .image-tools { display: flex; align-items: center; justify-content: center; gap: 12px; width: min(480px, 100%); min-height: 80px; }
-    .image-preview { width: 96px; height: 72px; object-fit: contain; background: #fff; border: 1px solid var(--border); border-radius: 6px; }
-    .image-label { min-width: 0; max-width: 220px; font-size: .8rem; color: var(--muted); overflow-wrap: anywhere; }
+    .image-tools > * { flex: none; }
+    /* The upload button, label, clear button and gaps take about 240px of a narrow screen. */
+    .image-gallery { display: flex; gap: 6px; max-width: min(280px, calc(100vw - 240px)); overflow-x: auto; }
+    .image-preview { flex: none; width: 64px; height: 48px; object-fit: contain; background: #fff; border: 1px solid var(--border); border-radius: 6px; }
+    .image-preview[data-status="Sending"] { opacity: .5; }
+    .image-preview[data-status="Rejected"] { border-color: #b83f46; }
+    .image-label { max-width: 220px; font-size: .8rem; color: var(--muted); white-space: nowrap; }
     .image-label span { display: block; }
     .image-status { color: var(--accent); min-height: 1.2em; }
     .question-btn[aria-pressed="true"] { background: #b83f46; color: white; }
@@ -191,11 +196,11 @@
 
   <footer class="dock-wrap">
     <div id="imageTools" class="image-tools" hidden>
-      <input id="imageFile" type="file" accept="image/jpeg,image/png" hidden>
-      <button id="imageUpload" class="dock-btn" type="button" title="Upload image" aria-label="Upload image"><i data-lucide="image-plus"></i></button>
-      <img id="imagePreview" class="image-preview" alt="Selected image" hidden>
+      <input id="imageFile" type="file" accept="image/jpeg,image/png" multiple hidden>
+      <button id="imageUpload" class="dock-btn" type="button" title="Upload images" aria-label="Upload images"><i data-lucide="image-plus"></i></button>
+      <div id="imageGallery" class="image-gallery" role="list" aria-label="Uploaded images" hidden></div>
       <div class="image-label"><span id="imageName"></span><span id="imageStatus" class="image-status" role="status"></span></div>
-      <button id="imageRemove" class="icon-btn" type="button" title="Remove preview" aria-label="Remove preview" hidden><i data-lucide="x"></i></button>
+      <button id="imageRemove" class="icon-btn" type="button" title="Clear images" aria-label="Clear images" hidden><i data-lucide="x"></i></button>
     </div>
     <button id="startBtn" class="start-btn" type="button">
       Start talking

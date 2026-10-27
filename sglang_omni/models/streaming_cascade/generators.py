@@ -125,10 +125,22 @@ class OpenAIChatGenerator(Replier):
             elif message.role != "user":
                 raise ValueError("images belong to user messages")
             else:
-                content_parts: list[ChatCompletionContentPartParam] = [
-                    {"type": "text", "text": message.content}
-                ]
+                # note (Yuhao Chen): Each image precedes the utterance it was uploaded for; a merged turn with its images after all its text was answered from the first image.
+                content_parts: list[ChatCompletionContentPartParam] = []
+                text_start = 0
                 for image in message.images:
+                    if image.content_offset > text_start:
+                        content_parts.append(
+                            {
+                                "type": "text",
+                                "text": message.content[
+                                    text_start : image.content_offset
+                                ].strip(),
+                            }
+                        )
+                        text_start = image.content_offset
+                    else:
+                        pass
                     encoded_image = base64.b64encode(image.image_bytes).decode("ascii")
                     content_parts.append(
                         {
@@ -138,6 +150,12 @@ class OpenAIChatGenerator(Replier):
                             },
                         }
                     )
+                if message.content[text_start:].strip():
+                    content_parts.append(
+                        {"type": "text", "text": message.content[text_start:].strip()}
+                    )
+                else:
+                    pass
                 completion_messages.append({"role": "user", "content": content_parts})
         if self.config.supports_images and not has_images:
             completion_messages.insert(

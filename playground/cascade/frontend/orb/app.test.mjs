@@ -155,7 +155,7 @@ test("microphone permission failure clears the accepted image so recording can b
     await app.settled();
     await recording;
     assert.equal(socket.sent.at(-1).type, "input_audio_buffer.clear");
-    assert.equal(app.elements.get("imageStatus").textContent, "Rejected");
+    assert.equal(app.elements.get("imageStatus").textContent, "Ready");
   }
 });
 
@@ -244,4 +244,33 @@ test("a failed microphone in a live image session can be retried from the microp
   socket.receive({ type: "sglang.input_image.accepted", client_event_id: retriedImage.event_id, unit_id: "unit_0" });
   await app.settled();
   assert.equal(socket.sent.filter((event) => event.type === "input_audio_buffer.clear").length, initialClearCount + 1);
+});
+
+test("images picked together are sent in order, only new picks are sent later, and the tray keeps the granted window", async () => {
+  const app = createApp({ outputModalities: ["audio"] }, { getTracks: () => [{ stop() {} }] });
+  const { socket } = await firstSessionUpdate(app);
+  const imageFormat = { max_bytes: 100, max_frames_per_unit: 2 };
+  socket.receive({ type: "session.updated", session: { sglang: { granted: {
+    interaction: "turn_based", input_audio_format: { rate: 16000 }, input_modalities: ["audio", "image"],
+    input_image_format: imageFormat, client_commit: true, turn_control: ["server_vad", null],
+  } } } });
+  await app.settled();
+  const imageFile = app.elements.get("imageFile");
+  const png = (name, marker) => ({ name, size: 5, type: "image/png", arrayBuffer: async () => new Uint8Array([137, 80, 78, 71, marker]).buffer });
+  const pick = async (...files) => {
+    const sentBefore = socket.sent.length;
+    imageFile.files = files;
+    const picking = imageFile.listeners.change();
+    await app.settled();
+    const appended = socket.sent.slice(sentBefore).filter((event) => event.type === "sglang.input_image.append");
+    for (const event of appended) socket.receive({ type: "sglang.input_image.accepted", client_event_id: event.event_id, unit_id: "unit_0" });
+    await picking;
+    return appended.map((event) => Buffer.from(event.image, "base64")[4]);
+  };
+  assert.deepEqual(await pick(png("a.png", 1), png("b.png", 2), png("c.png", 3)), [2, 3]);
+  assert.equal(app.elements.get("warning").textContent, "Only the last 2 images are kept");
+  assert.equal(app.elements.get("imageName").textContent, "2 images");
+  assert.equal(app.elements.get("imageStatus").textContent, "Received");
+  assert.deepEqual(await pick(png("d.png", 4)), [4]);
+  assert.equal(app.evaluate("images.map((image) => image.name).join()"), "c.png,d.png");
 });

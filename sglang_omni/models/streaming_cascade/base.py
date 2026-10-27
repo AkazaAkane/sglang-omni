@@ -77,12 +77,13 @@ class StreamComponent:
 
 
 class ChatImage(BaseModel):
-    """An encoded image retained in one user turn."""
+    """An encoded image retained in one user turn; content_offset is the character of the turn's text that begins the utterance it was uploaded for."""
 
     model_config = ConfigDict(frozen=True)
 
     media_type: Literal["image/jpeg", "image/png"]
     image_bytes: bytes
+    content_offset: int = 0
 
 
 class ChatMessage(BaseModel):

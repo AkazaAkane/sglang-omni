@@ -38,6 +38,7 @@ from sglang_omni.proto.streams import (
     TURN_DONE,
     TURN_EMPTY,
 )
+from sglang_omni.serve.realtime.session_bridge import capabilities_of
 from tests.unit_test.fixtures.cascade_fakes import drain
 from tests.unit_test.fixtures.session_outputs import control_chunk
 
@@ -101,15 +102,15 @@ async def test_delayed_transcript_keeps_the_question_image_and_next_turn_keeps_i
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("replace_image", [False, True])
-async def test_unheard_reply_merging_preserves_or_replaces_the_question_image(
-    replace_image: bool,
+@pytest.mark.parametrize("add_image", [False, True])
+async def test_unheard_reply_merging_keeps_every_question_image(
+    add_image: bool,
 ) -> None:
-    """Merging user messages after an unheard reply must retain visual context."""
+    """Merging user messages after an unheard reply dropped the earlier image, or put both images after all the text so the model answered the new question from the old image."""
     dialog = Dialog(DialogConfig())
     red = image_chunk("red")
     blue = image_chunk("blue", 100)
-    uploads = [blue] if replace_image else []
+    uploads = [blue] if add_image else []
     outputs = await drain(
         dialog,
         [
@@ -124,13 +125,78 @@ async def test_unheard_reply_merging_preserves_or_replaces_the_question_image(
     prompts = [messages_of(chunk) for chunk in outputs if chunk.format == MESSAGES]
     assert [message.role for message in prompts[-1]] == ["system", "user"]
     assert prompts[-1][-1].content == "What color? Does it have a handle?"
-    expected_image = blue if replace_image else red
-    assert prompts[-1][-1].images[0].image_bytes == expected_image.payload
+    generator = OpenAIChatGenerator(
+        OpenAIChatGeneratorConfig(
+            base_url="http://vlm/v1", model="vlm", supports_images=True
+        )
+    )
+    try:
+        content_parts = generator.request_body(prompts[-1])["messages"][-1]["content"]
+    finally:
+        await generator.close()
+    expected_parts = (
+        [red.payload, "What color?", blue.payload, "Does it have a handle?"]
+        if add_image
+        else [red.payload, "What color? Does it have a handle?"]
+    )
+    assert [
+        (
+            part["text"]
+            if part["type"] == "text"
+            else base64.b64decode(part["image_url"]["url"].split(",", 1)[1])
+        )
+        for part in content_parts
+    ] == expected_parts
+
+
+@pytest.mark.asyncio
+async def test_images_uploaded_together_reach_one_question_and_newest_stay_in_history() -> (
+    None
+):
+    """Several uploads before one question kept only the last, and eviction dropped a whole message's images."""
+    dialog = Dialog(DialogConfig(max_history_images=3))
+    first_images = [image_chunk("red"), image_chunk("green")]
+    second_images = [image_chunk("blue", 100), image_chunk("yellow", 100)]
+    first = await drain(dialog, [*first_images, transcript_chunk("Compare them", True)])
+    prompt = messages_of(next(chunk for chunk in first if chunk.format == MESSAGES))
+    assert [image.image_bytes for image in prompt[-1].images] == [
+        image.payload for image in first_images
+    ]
+    second = await drain(
+        dialog,
+        [
+            text_chunk("Red and green.", 1),
+            control_chunk(TURN_DONE, turn=1),
+            *second_images,
+            replace(transcript_chunk("And these?", True), t_start_ms=100),
+        ],
+    )
+    prompt = messages_of(next(chunk for chunk in second if chunk.format == MESSAGES))
+    assert [[image.image_bytes for image in message.images] for message in prompt] == [
+        [],
+        [first_images[1].payload],
+        [],
+        [image.payload for image in second_images],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pending_uploads_over_budget_drop_the_oldest_and_keep_the_session() -> (
+    None
+):
+    """Uploading more images than the history keeps before speaking ended the session."""
+    dialog = Dialog(DialogConfig(max_history_images=2))
+    uploads = [image_chunk(color) for color in ("red", "green", "blue")]
+    outputs = await drain(dialog, [*uploads, transcript_chunk("What are these?", True)])
+    prompt = messages_of(next(chunk for chunk in outputs if chunk.format == MESSAGES))
+    assert [image.image_bytes for image in prompt[-1].images] == [
+        upload.payload for upload in uploads[1:]
+    ]
 
 
 @pytest.mark.asyncio
 async def test_vad_question_uses_image_uploaded_after_startup_silence() -> None:
-    """Startup silence and the whole onset packet previously selected the old image."""
+    """Startup silence and the whole onset packet previously left an image uploaded before speech onset off the question."""
     configuration = ConfigManager.from_file(PROFILE).config.component_graph()
     recognizer = OpenAITranscriptionRecognizer(configuration.node("asr").component)
     await recognizer.client.aclose()
@@ -147,10 +213,14 @@ async def test_vad_question_uses_image_uploaded_after_startup_silence() -> None:
     )
     assert (transcripts[0].t_start_ms, transcripts[0].duration_ms) == (1088, 112)
     dialog = Dialog(DialogConfig())
+    red = image_chunk("red")
     blue = image_chunk("blue", 1040)
-    outputs = await drain(dialog, [image_chunk("red"), blue, *transcripts])
+    outputs = await drain(dialog, [red, blue, *transcripts])
     messages = messages_of(next(chunk for chunk in outputs if chunk.format == MESSAGES))
-    assert messages[-1].images[0].image_bytes == blue.payload
+    assert [image.image_bytes for image in messages[-1].images] == [
+        red.payload,
+        blue.payload,
+    ]
 
 
 @pytest.mark.asyncio
@@ -209,11 +279,11 @@ async def test_follow_up_and_session_isolation_preserve_structured_images_at_htt
             )
             request_body = generator.request_body(messages)
             content_parts = request_body["messages"][1]["content"]
-            assert content_parts[0] == {"type": "text", "text": "What color?"}
             assert (
-                base64.b64decode(content_parts[1]["image_url"]["url"].split(",", 1)[1])
+                base64.b64decode(content_parts[0]["image_url"]["url"].split(",", 1)[1])
                 == image.payload
             )
+            assert content_parts[1] == {"type": "text", "text": "What color?"}
             assert request_body["messages"][-1] == {
                 "role": "user",
                 "content": "Describe the details.",
@@ -381,5 +451,10 @@ def test_image_profile_requires_explicit_capability_and_routes_images_only_to_di
     assert IMAGE_FRAME not in graph.node("asr").edges()["input"]
     assert IMAGE_FRAME not in config.session_graph().nodes["vad"].edges()["input"]
     assert IMAGE_FRAME in graph.node("dialog").edges()["input"]
+    granted = capabilities_of(config.session_ports()).to_granted_capabilities()
+    assert (
+        granted["input_image_format"]["max_frames_per_unit"]
+        == graph.node("dialog").component.max_history_images
+    )
     with pytest.raises(ValueError, match="supports_images"):
         graph.apply({"nodes": {"llm": {"supports_images": False}}})

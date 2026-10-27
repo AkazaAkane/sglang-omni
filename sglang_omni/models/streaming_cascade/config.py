@@ -26,6 +26,7 @@ from sglang_omni.models.nemotron3_5_asr.config import (
 )
 from sglang_omni.models.streaming_cascade.base import ComponentConfig
 from sglang_omni.models.streaming_cascade.components import COMPONENTS
+from sglang_omni.models.streaming_cascade.dialog import DialogConfig
 from sglang_omni.models.streaming_cascade.generators import OpenAIChatGeneratorConfig
 from sglang_omni.models.turn_detection.node import TURN_DETECTION_STAGE
 from sglang_omni.models.vad.node import VAD_STAGE
@@ -530,8 +531,26 @@ class ComponentGraphConfig(BaseModel):
         input_ports: list[AudioPort | ImagePort] = [
             AudioPort(PCM16, SESSION_INPUT_SAMPLE_RATE_HZ)
         ]
-        if any(IMAGE_FRAME in node.edges().get(GRAPH_INPUT, ()) for node in self.nodes):
-            input_ports.append(ImagePort(IMAGE_FRAME))
+        image_components = [
+            node.component
+            for node in self.nodes
+            if IMAGE_FRAME in node.edges().get(GRAPH_INPUT, ())
+        ]
+        if image_components:
+            # note (Yuhao Chen): Images picked together share one audio unit, so a unit takes as many as the dialog keeps.
+            input_ports.append(
+                ImagePort(
+                    IMAGE_FRAME,
+                    max_frames_per_unit=min(
+                        (
+                            component.max_history_images
+                            for component in image_components
+                            if isinstance(component, DialogConfig)
+                        ),
+                        default=1,
+                    ),
+                )
+            )
         else:
             pass
         return SessionPorts(

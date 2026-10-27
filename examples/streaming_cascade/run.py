@@ -55,20 +55,24 @@ async def run(
     output_path: Path,
     *,
     commit: bool = False,
-    image_path: Path | None = None,
+    question_images: list[tuple[int, Path]] | None = None,
 ) -> None:
     config = ConfigManager.from_file(str(config_path)).config
     unit_bytes = config.unit_ms * INPUT_BYTES_PER_MS
     runner = MultiProcessPipelineRunner(config)
-    image_bytes = None
-    if image_path is not None:
+    # Image bytes sent just before each question's audio, in command-line order.
+    images_by_question: dict[int, list[bytes]] = {}
+    for question_index, image_path in question_images or ():
+        if not 0 <= question_index < len(audio_paths):
+            raise ValueError(f"--image question {question_index + 1} has no audio file")
+        else:
+            pass
         with image_path.open("rb") as image_file:
             image_bytes = image_file.read(MAX_UPLOAD_IMAGE_BYTES + 1)
         validate_upload_image(image_bytes)
-        if "image" not in config.session_ports().input_modalities:
-            raise ValueError("this profile does not support image input")
-        else:
-            pass
+        images_by_question.setdefault(question_index, []).append(image_bytes)
+    if images_by_question and "image" not in config.session_ports().input_modalities:
+        raise ValueError("this profile does not support image input")
     else:
         pass
     services = AsyncExitStack()
@@ -113,21 +117,19 @@ async def run(
             async def send() -> None:
                 sequence = 0
                 start_ms = 0.0
-                if image_bytes is not None:
-                    await append(
-                        TimedChunk(
-                            IMAGE,
-                            start_ms,
-                            0,
-                            sequence,
-                            image_bytes,
-                            format=IMAGE_FRAME,
+                for question_index, path in enumerate(audio_paths):
+                    for image_bytes in images_by_question.get(question_index, ()):
+                        await append(
+                            TimedChunk(
+                                IMAGE,
+                                start_ms,
+                                0,
+                                sequence,
+                                image_bytes,
+                                format=IMAGE_FRAME,
+                            )
                         )
-                    )
-                    sequence += 1
-                else:
-                    pass
-                for path in audio_paths:
+                        sequence += 1
                     pcm = read_pcm16(path)
                     for offset in range(0, len(pcm), unit_bytes):
                         audio = pcm[offset : offset + unit_bytes]
@@ -206,8 +208,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("cascade-response.wav"))
     parser.add_argument(
         "--image",
-        type=Path,
-        help="One JPEG or PNG attached to the first question; later files are follow-up questions",
+        nargs=2,
+        action="append",
+        default=[],
+        metavar=("QUESTION", "PATH"),
+        help="A JPEG or PNG sent before the given 1-based audio file; repeat to send several images with one question or images with later questions",
     )
     parser.add_argument(
         "--commit",
@@ -221,7 +226,10 @@ def main() -> None:
             arguments.audio,
             arguments.output,
             commit=arguments.commit,
-            image_path=arguments.image,
+            question_images=[
+                (int(question) - 1, Path(image_path))
+                for question, image_path in arguments.image
+            ],
         )
     )
 

@@ -154,6 +154,11 @@ class Dialog(StreamComponent):
     Speech that started after an utterance ended and has not stopped when
     the utterance's reply begins is speech over that reply, so the reply
     ends as soon as it begins.
+
+    A nonempty transcript takes every image uploaded at or before its start,
+    in upload order, and the history keeps the newest images that fit
+    max_history_images and max_history_image_bytes, so follow-ups still see
+    earlier pictures.
     """
 
     def __init__(self, config: DialogConfig) -> None:
@@ -267,19 +272,20 @@ class Dialog(StreamComponent):
                 media_type=validate_upload_image(chunk.payload),
                 image_bytes=chunk.payload,
             )
-            if (
-                len(self.pending_image_uploads) >= self.config.max_history_images
+            self.pending_image_uploads.append(
+                ImageUpload(timestamp_ms=chunk.t_start_ms, image=image)
+            )
+            while (
+                len(self.pending_image_uploads) > self.config.max_history_images
                 or sum(
                     len(upload.image.image_bytes)
                     for upload in self.pending_image_uploads
                 )
-                + len(image.image_bytes)
                 > self.config.max_history_image_bytes
             ):
-                raise ValueError("pending images exceed the image history budget")
-            else:
-                self.pending_image_uploads.append(
-                    ImageUpload(timestamp_ms=chunk.t_start_ms, image=image)
+                evicted_upload = self.pending_image_uploads.popleft()
+                logger.warning(
+                    f"dropping the image uploaded at {evicted_upload.timestamp_ms:.0f} ms: pending images exceed the image history budget"
                 )
         elif chunk.format == TRANSCRIPT_FORMAT and chunk.payload["is_final"]:
             transcript_text = str(chunk.payload["text"]).strip()
@@ -289,7 +295,7 @@ class Dialog(StreamComponent):
                     self.pending_image_uploads
                     and self.pending_image_uploads[0].timestamp_ms <= chunk.t_start_ms
                 ):
-                    images = (self.pending_image_uploads.popleft().image,)
+                    images = (*images, self.pending_image_uploads.popleft().image)
             else:
                 pass
             self.turns += 1
@@ -440,7 +446,19 @@ class Dialog(StreamComponent):
         self.messages[index - 1] = ChatMessage(
             role="user",
             content=f"{self.messages[index - 1].content} {self.messages[index + 1].content}",
-            images=self.messages[index + 1].images or self.messages[index - 1].images,
+            images=(
+                *self.messages[index - 1].images,
+                *(
+                    image.model_copy(
+                        update={
+                            "content_offset": image.content_offset
+                            + len(self.messages[index - 1].content)
+                            + 1
+                        }
+                    )
+                    for image in self.messages[index + 1].images
+                ),
+            ),
         )
         del self.messages[index : index + 2]
         if self.truncatable is not None and self.truncatable[1] == index:
@@ -473,23 +491,29 @@ class Dialog(StreamComponent):
                 self.join_around(len(self.messages) - 2)
             else:
                 pass
+            # note (Yuhao Chen): Evict single images, oldest first, so the newest pictures stay visible to follow-up questions.
             retained_image_count = 0
             retained_image_byte_count = 0
             for index in range(len(self.messages) - 1, 0, -1):
                 message = self.messages[index]
-                message_image_byte_count = sum(
-                    len(image.image_bytes) for image in message.images
-                )
-                if (
-                    retained_image_count + len(message.images)
-                    > self.config.max_history_images
-                    or retained_image_byte_count + message_image_byte_count
-                    > self.config.max_history_image_bytes
-                ):
-                    self.messages[index] = message.model_copy(update={"images": ()})
+                retained_images: list[ChatImage] = []
+                for image in reversed(message.images):
+                    if (
+                        retained_image_count < self.config.max_history_images
+                        and retained_image_byte_count + len(image.image_bytes)
+                        <= self.config.max_history_image_bytes
+                    ):
+                        retained_images.insert(0, image)
+                        retained_image_count += 1
+                        retained_image_byte_count += len(image.image_bytes)
+                    else:
+                        pass
+                if len(retained_images) != len(message.images):
+                    self.messages[index] = message.model_copy(
+                        update={"images": tuple(retained_images)}
+                    )
                 else:
-                    retained_image_count += len(message.images)
-                    retained_image_byte_count += message_image_byte_count
+                    pass
             if language is not None:
                 self.language = language
             else:
