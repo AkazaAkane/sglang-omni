@@ -33,8 +33,14 @@ class UtteranceSegmenter:
     speech.stopped closes it, and audio between utterances is only held.
     """
 
-    def __init__(self, *, uses_speech_events: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        uses_speech_events: bool = False,
+        should_crop_audio: bool = False,
+    ) -> None:
         self.uses_speech_events: bool = uses_speech_events
+        self.should_crop_audio: bool = should_crop_audio
         self.is_open: bool = False
         self.pending_audio: deque[TimedChunk] = deque()
         self.speech_start_ms: float | None = None
@@ -43,8 +49,10 @@ class UtteranceSegmenter:
         event_type = control_type(chunk)
         if chunk.modality == AUDIO and not chunk.payload:
             return []
-        elif chunk.modality == AUDIO and self.is_open:
+        elif chunk.modality == AUDIO and self.is_open and self.should_crop_audio:
             return self.utterance_audio(chunk)
+        elif chunk.modality == AUDIO and self.is_open:
+            return [chunk]
         elif chunk.modality == AUDIO and not self.uses_speech_events:
             self.is_open = True
             return [OPEN_UTTERANCE, chunk]
@@ -86,6 +94,8 @@ class UtteranceSegmenter:
             return [chunk]
         elif chunk.t_start_ms + chunk.duration_ms <= self.speech_start_ms:
             return []
+        elif not self.should_crop_audio:
+            return [chunk]
         else:
             skipped_sample_count = round(
                 (self.speech_start_ms - chunk.t_start_ms)

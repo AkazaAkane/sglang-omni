@@ -1137,8 +1137,7 @@ def test_segmenter_gates_on_speech_controls():
         assert segmenter.step(chunk) == []
     assert segmenter.pending_audio[0].t_start_ms == 600
     restart = control_chunk(SPEECH_STARTED, t_ms=2350)
-    cropped = replace(held[-3], t_start_ms=2350, duration_ms=50, payload=QUIET[1600:])
-    assert segmenter.step(restart) == ["open", cropped, *held[-2:]]
+    assert segmenter.step(restart) == ["open", *held[-3:]]
     assert segmenter.step(control_chunk(COMMIT)) == ["finish"]
     assert segmenter.step(control_chunk(COMMIT)) == ["empty"]
     assert segmenter.finish() == []
@@ -1149,7 +1148,7 @@ def test_vad_segmenter_crops_pcm_to_the_speech_onset(
     speech_arrives_first: bool,
 ) -> None:
     """A whole held packet put the transcript before an image uploaded just before speech."""
-    segmenter = UtteranceSegmenter(uses_speech_events=True)
+    segmenter = UtteranceSegmenter(uses_speech_events=True, should_crop_audio=True)
     pcm = np.arange(3200, dtype="<i2").tobytes()
     audio = TimedChunk(AUDIO, 1000, 200, 0, pcm, format=PCM16)
     speech = control_chunk(SPEECH_STARTED, t_ms=1088)

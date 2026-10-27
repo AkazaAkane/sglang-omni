@@ -92,7 +92,7 @@
     }
 
     /* Dock */
-    .dock-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 8px 16px max(28px, env(safe-area-inset-bottom)); }
+    .dock-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; min-width: 0; padding: 8px 16px max(28px, env(safe-area-inset-bottom)); }
     .dock { display: flex; align-items: center; gap: 16px; }
     .dock-btn { width: 52px; height: 52px; display: grid; place-items: center; border: 0; border-radius: 50%; background: var(--btn); color: var(--text); cursor: pointer; transition: background 150ms, transform 150ms, opacity 150ms; touch-action: manipulation; }
     .dock-btn svg { width: 20px; height: 20px; }
@@ -113,8 +113,8 @@
     .image-preview { flex: none; width: 64px; height: 48px; object-fit: contain; background: #fff; border: 1px solid var(--border); border-radius: 6px; }
     .image-preview[data-status="Sending"] { opacity: .5; }
     .image-preview[data-status="Rejected"] { border-color: #b83f46; }
-    .image-label { max-width: 220px; font-size: .8rem; color: var(--muted); white-space: nowrap; }
-    .image-label span { display: block; }
+    .image-label { flex: 0 1 220px; min-width: 0; max-width: 220px; font-size: .8rem; color: var(--muted); white-space: nowrap; }
+    .image-label span { display: block; overflow: hidden; text-overflow: ellipsis; }
     .image-status { color: var(--accent); min-height: 1.2em; }
     .question-btn[aria-pressed="true"] { background: #b83f46; color: white; }
     .question-btn svg { width: 20px; height: 20px; }

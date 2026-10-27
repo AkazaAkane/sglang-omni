@@ -107,7 +107,7 @@ class UtteranceRecognizer(StreamComponent):
 
     def __init__(self, *, wait_for_speech: bool = False) -> None:
         self.segmenter: UtteranceSegmenter = UtteranceSegmenter(
-            uses_speech_events=wait_for_speech
+            uses_speech_events=wait_for_speech, should_crop_audio=True
         )
 
     def utterance(self, audio: AsyncIterator[TimedChunk]) -> AsyncIterator[TimedChunk]:
