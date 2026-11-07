@@ -8,7 +8,10 @@ from pathlib import Path
 
 import pytest
 import torch
+from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.models.dflash import DFlashDraftModel
 from torch import nn
+from transformers import Qwen3Config
 
 from sglang_omni.speculative.dflash_draft import (
     DRAFT_ARCHITECTURE,
@@ -135,6 +138,49 @@ def make_draft_model() -> ReducedVocabularyDFlashDraftModel:
         ]
     )
     return draft_model
+
+
+def test_draft_attention_runs_outside_compiler_tracing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tracing draft attention functionalizes aliased cache writes into whole-pool copies."""
+    observed_compilation: list[bool] = []
+    attention = nn.Linear(2, 2, bias=False)
+    original_forward = attention.forward
+
+    def attention_forward(hidden_states: torch.Tensor) -> torch.Tensor:
+        observed_compilation.append(torch.compiler.is_compiling())
+        return original_forward(hidden_states)
+
+    monkeypatch.setattr(attention, "forward", attention_forward)
+
+    def initialize_layers(
+        model: DFlashDraftModel,
+        config: Qwen3Config,
+        quant_config: QuantizationConfig | None = None,
+        prefix: str = "",
+    ) -> None:
+        nn.Module.__init__(model)
+        layer = nn.Module()
+        layer.self_attn = nn.Module()
+        layer.self_attn.attn = attention
+        model.layers = nn.ModuleList([layer])
+
+    monkeypatch.setattr(DFlashDraftModel, "__init__", initialize_layers)
+    config = Qwen3Config(hidden_size=2)
+    config.draft_vocab_size = 3
+    draft_model = ReducedVocabularyDFlashDraftModel(config)
+    hidden_states = torch.tensor([[2.0, 3.0]])
+    expected = original_forward(hidden_states)
+
+    compiled_attention = torch.compile(
+        draft_model.layers[0].self_attn.attn, backend="eager"
+    )
+    actual = compiled_attention(hidden_states)
+
+    torch.testing.assert_close(actual, expected)
+    assert observed_compilation
+    assert not any(observed_compilation)
 
 
 def test_captured_and_eager_proposals_map_the_draft_head_to_target_tokens() -> None:

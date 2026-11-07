@@ -101,6 +101,11 @@ class ReducedVocabularyDFlashDraftModel(DFlashDraftModel):
         prefix: str = "",
     ) -> None:
         super().__init__(config, quant_config, prefix)
+        for layer in self.layers:
+            # note (Yuhao Chen): compiling writes through aliased K/V views copies the entire cache; attention still runs inside the enclosing CUDA graph.
+            layer.self_attn.attn.forward = torch.compiler.disable(
+                layer.self_attn.attn.forward
+            )
         self.lm_head: nn.Linear = nn.Linear(
             config.hidden_size, config.draft_vocab_size, bias=False
         )

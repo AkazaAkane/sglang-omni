@@ -322,6 +322,7 @@ Community & Resources
    developer_reference/reference_encode_service.md
    developer_reference/profiler.md
    developer_reference/qwen3_asr_concurrency_profile.md
+   developer_reference/moss_dflash_compile.md
    developer_reference/full_duplex_guide.md
    developer_reference/duplex_load_generator_pacing.md
    developer_reference/tts_bench.md
